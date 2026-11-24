@@ -41,5 +41,8 @@ similar = "2"
 notify = "8"
 portable-pty = "0.9"
 
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_JobObjects", "Win32_Security"] }

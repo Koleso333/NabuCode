@@ -65,6 +65,9 @@ export const ru = {
     restart: "Перезапустить",
     lost: "Связь с сервером прервалась",
     offline: "Нет связи с сервером",
+    mismatch: "Другая версия NabuCode уже запущена",
+    mismatchDetails: (window: number, server?: number) => `Этот NabuCode: протокол ${window}\nЗапущенный сервер: протокол ${server ?? "неизвестен"}\n\nЗакройте другой NabuCode и нажмите «Повторить».`,
+    retry: "Повторить",
   },
   attachments: {
     drop: "Перетащи файл сюда",

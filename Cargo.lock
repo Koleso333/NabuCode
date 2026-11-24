@@ -1440,7 +1440,6 @@ dependencies = [
 [[package]]
 name = "ncore"
 version = "0.1.0"
-source = "git+https://github.com/Koleso333/NabuCore?branch=main#41440842747710034663aa7db9f97fb98a8afddb"
 dependencies = [
  "bytes",
  "futures-core",
@@ -1515,7 +1514,6 @@ dependencies = [
 [[package]]
 name = "ncore-core"
 version = "0.1.0"
-source = "git+https://github.com/Koleso333/NabuCore?branch=main#41440842747710034663aa7db9f97fb98a8afddb"
 dependencies = [
  "bytes",
  "serde",
@@ -1557,7 +1555,6 @@ dependencies = [
 [[package]]
 name = "ncore-mcp"
 version = "0.1.0"
-source = "git+https://github.com/Koleso333/NabuCore?branch=main#41440842747710034663aa7db9f97fb98a8afddb"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -1571,7 +1568,6 @@ dependencies = [
 [[package]]
 name = "ncore-tokio"
 version = "0.1.0"
-source = "git+https://github.com/Koleso333/NabuCore?branch=main#41440842747710034663aa7db9f97fb98a8afddb"
 dependencies = [
  "base64 0.23.1",
  "bytes",

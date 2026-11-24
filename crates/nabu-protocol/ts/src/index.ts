@@ -1,6 +1,8 @@
-// Mirrors crates/nabucode-protocol.
+// Mirrors crates/nabu-protocol.
 
-export type ServerInfo = { name: string; version: string }
+export const protocolVersion = 1
+
+export type ServerInfo = { name: string; version: string; protocol: number }
 
 export type Model = {
   id: string

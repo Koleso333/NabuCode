@@ -17,6 +17,20 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "icon": ["icons/icon.png", "icons/icon.ico"]
+    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "copyright": "© 2026 Koleso333",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["Russian", "English"],
+        "customLanguageFiles": { "Russian": "installer/Russian.nsh", "English": "installer/English.nsh" },
+        "installerIcon": "installer/installer.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "sidebarImage": "installer/sidebar.bmp",
+        "headerImage": "installer/header.bmp",
+        "uninstallerHeaderImage": "installer/header.bmp",
+        "installerHooks": "installer/hooks.nsh"
+      }
+    }
   }
 }

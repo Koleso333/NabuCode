@@ -1,7 +1,7 @@
 import { createSignal } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { NabuEvent, Requests } from "@nabu/protocol";
+import { protocolVersion, type NabuEvent, type Requests } from "@nabu/protocol";
 import { tr } from "./i18n";
 
 type ShellStatus =
@@ -20,7 +20,8 @@ export type Connection =
   | { state: "connecting" }
   | { state: "connected" }
   | { state: "reconnecting" }
-  | { state: "failed"; message: string };
+  | { state: "failed"; message: string }
+  | { state: "mismatch"; server?: number };
 
 const [connection, setConnection] = createSignal<Connection>({ state: "connecting" });
 export { connection };
@@ -53,11 +54,7 @@ function open(url: string) {
 function connect() {
   const current = new WebSocket(address!);
   socket = current;
-  current.onopen = () => {
-    everConnected = true;
-    setConnection({ state: "connected" });
-    connectedListeners.forEach(listener => listener());
-  };
+  current.onopen = () => void greet(current);
   current.onmessage = event => receive(JSON.parse(event.data) as ServerMessage);
   // The socket can drop while the shell still reports the same server; its exit comes as a status event
   current.onclose = () => {
@@ -67,6 +64,19 @@ function connect() {
     waiting();
     retryTimer = setTimeout(() => { if (address && !socket) connect(); }, 1000);
   };
+}
+
+// Another NabuCode may have started this server, so it has to speak the same protocol
+async function greet(current: WebSocket) {
+  const info = await request("serverInfo").catch(() => undefined);
+  if (socket !== current || !info) return;
+  if (info.protocol !== protocolVersion) {
+    drop();
+    return setConnection({ state: "mismatch", server: info.protocol });
+  }
+  everConnected = true;
+  setConnection({ state: "connected" });
+  connectedListeners.forEach(listener => listener());
 }
 
 function drop() {
@@ -145,6 +155,7 @@ export async function uploadFile(session: string, part: string, file: File) {
   return (await response.json() as { url: string }).url;
 }
 
+/** Also looks for the server again, after another NabuCode version may have closed. */
 export function restartServer() {
   waiting();
   void invoke("server_restart");

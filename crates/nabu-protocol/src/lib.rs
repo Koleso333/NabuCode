@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Raised on every incompatible change of the messages; a window only works with a server of the same version.
+pub const PROTOCOL_VERSION: u32 = 1;
+
 /// First stdout line of the server process: where and how to connect.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -473,6 +476,7 @@ pub struct ProtocolError {
 pub struct ServerInfo {
     pub name: String,
     pub version: String,
+    pub protocol: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

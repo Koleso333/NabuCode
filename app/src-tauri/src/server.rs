@@ -1,7 +1,7 @@
-use std::collections::VecDeque;
-use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::io::{Read, Write};
+use std::net::TcpStream;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -12,7 +12,12 @@ use tauri::{AppHandle, Emitter};
 /// A server that lived shorter than this before exiting counts as a crash in a row.
 const QUICK_CRASH: Duration = Duration::from_secs(30);
 const CRASHES_BEFORE_GIVING_UP: u32 = 3;
-const STDERR_LINES: usize = 20;
+const START_TIMEOUT: Duration = Duration::from_secs(15);
+const LOG_LINES: usize = 20;
+const LOG_LIMIT: u64 = 1 << 20;
+/// Kept in step with nabu-server's shared.rs.
+const BUSY: i32 = 3;
+const START_MARK: &str = "--- nabu started";
 
 #[derive(Clone, Serialize)]
 #[serde(tag = "state", rename_all = "camelCase")]
@@ -22,13 +27,15 @@ pub enum Status {
     Failed { message: String },
 }
 
+/// What a running server wrote to `server.json`.
 #[derive(Deserialize)]
-struct Listening {
+struct Found {
     port: u16,
     token: String,
+    protocol: u32,
 }
 
-/// The shell's own server: started in the background, restarted when it exits.
+/// The server shared by all NabuCode windows: found or started in the background, started again when it exits.
 pub struct Sidecar {
     status: Arc<Mutex<Status>>,
     restart: Mutex<Sender<()>>,
@@ -39,7 +46,7 @@ impl Sidecar {
         let status = Arc::new(Mutex::new(Status::Starting));
         let (restart, requests) = channel();
         let shared = status.clone();
-        std::thread::spawn(move || supervise(app, shared, requests));
+        std::thread::spawn(move || supervise(app, data_dir(), shared, requests));
         Self { status, restart: Mutex::new(restart) }
     }
 
@@ -52,7 +59,7 @@ impl Sidecar {
     }
 }
 
-fn supervise(app: AppHandle, status: Arc<Mutex<Status>>, restarts: Receiver<()>) {
+fn supervise(app: AppHandle, data: PathBuf, status: Arc<Mutex<Status>>, restarts: Receiver<()>) {
     let publish = |next: Status| {
         *status.lock().unwrap() = next.clone();
         let _ = app.emit("server-status", next);
@@ -61,91 +68,155 @@ fn supervise(app: AppHandle, status: Arc<Mutex<Status>>, restarts: Receiver<()>)
     loop {
         publish(Status::Starting);
         let started = Instant::now();
-        let message = match Process::spawn() {
-            Ok(mut process) => {
-                publish(Status::Running { port: process.listening.port, token: process.listening.token.clone() });
-                process.wait()
+        let message = match attach(&data) {
+            Ok(Attached::Held(mut hold)) => {
+                publish(Status::Running { port: hold.found.port, token: hold.found.token.clone() });
+                hold.wait();
+                describe("The server stopped", &data)
+            }
+            // The window tells about the other version; that server stays untouched until the user retries
+            Ok(Attached::Foreign(found)) => {
+                publish(Status::Running { port: found.port, token: found.token });
+                if !wait_restart(&restarts) {
+                    return;
+                }
+                continue;
             }
             Err(message) => message,
         };
         crashes = if started.elapsed() < QUICK_CRASH { crashes + 1 } else { 1 };
         if crashes >= CRASHES_BEFORE_GIVING_UP {
             publish(Status::Failed { message });
-            if restarts.recv().is_err() {
+            if !wait_restart(&restarts) {
                 return;
             }
-            while restarts.try_recv().is_ok() {}
             crashes = 0;
         }
     }
 }
 
-/// Holding stdin keeps the server alive: it exits when the pipe closes, so also when the shell dies.
-struct Process {
-    listening: Listening,
-    child: Child,
-    _stdin: ChildStdin,
-    stderr: Arc<Mutex<VecDeque<String>>>,
+/// False when the window is gone.
+fn wait_restart(restarts: &Receiver<()>) -> bool {
+    while restarts.try_recv().is_ok() {}
+    let asked = restarts.recv().is_ok();
+    while restarts.try_recv().is_ok() {}
+    asked
 }
 
-impl Process {
-    fn spawn() -> Result<Self, String> {
-        let mut command = Command::new(server_path()?);
-        command.arg("serve");
-        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        #[cfg(windows)]
+enum Attached {
+    Held(Hold),
+    Foreign(Found),
+}
+
+fn attach(data: &Path) -> Result<Attached, String> {
+    if let Some(attached) = find(data) {
+        return Ok(attached);
+    }
+    let mut child = spawn(data)?;
+    let deadline = Instant::now() + START_TIMEOUT;
+    loop {
+        if let Some(attached) = find(data) {
+            return Ok(attached);
+        }
+        // BUSY: another window started a server at the same moment, so its server.json is coming
+        if let Ok(Some(exit)) = child.try_wait()
+            && exit.code() != Some(BUSY)
         {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            command.creation_flags(CREATE_NO_WINDOW);
+            return Err(describe(&format!("The server didn't start ({exit})"), data));
         }
-        let mut child = command.spawn().map_err(|error| format!("Couldn't start the server: {error}"))?;
-        let stdin = child.stdin.take().expect("piped");
-        let stdout = child.stdout.take().expect("piped");
-        let stderr = keep_tail(child.stderr.take().expect("piped"));
-
-        let mut line = String::new();
-        let read = BufReader::new(stdout).read_line(&mut line);
-        match serde_json::from_str(&line) {
-            Ok(listening) => Ok(Self { listening, child, _stdin: stdin, stderr }),
-            Err(_) => {
-                let _ = child.kill();
-                let exit = child.wait().map(|code| code.to_string()).unwrap_or_default();
-                let reason = read.err().map(|error| error.to_string()).unwrap_or(exit);
-                Err(describe(&format!("The server didn't answer on start ({reason})"), &stderr))
-            }
+        if Instant::now() > deadline {
+            return Err(describe("The server didn't answer on start", data));
         }
-    }
-
-    fn wait(&mut self) -> String {
-        let exit = self.child.wait().map(|code| code.to_string()).unwrap_or_else(|error| error.to_string());
-        describe(&format!("The server stopped ({exit})"), &self.stderr)
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
-fn keep_tail(stderr: impl std::io::Read + Send + 'static) -> Arc<Mutex<VecDeque<String>>> {
-    let tail = Arc::new(Mutex::new(VecDeque::new()));
-    let lines = tail.clone();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            let mut lines = lines.lock().unwrap();
-            if lines.len() == STDERR_LINES {
-                lines.pop_front();
-            }
-            lines.push_back(line);
-        }
-    });
-    tail
+fn find(data: &Path) -> Option<Attached> {
+    let text = std::fs::read_to_string(data.join("server.json")).ok()?;
+    let found: Found = serde_json::from_str(&text).ok()?;
+    let stream = open_hold(&found)?;
+    if found.protocol != nabu_protocol::PROTOCOL_VERSION {
+        return Some(Attached::Foreign(found));
+    }
+    Some(Attached::Held(Hold { found, stream }))
 }
 
-fn describe(reason: &str, stderr: &Mutex<VecDeque<String>>) -> String {
-    // The reader thread may still be catching the last lines of a process that just exited
-    std::thread::sleep(Duration::from_millis(100));
-    let lines = stderr.lock().unwrap();
-    if lines.is_empty() {
+/// Its output goes to `server.log`: the server outlives this window, so it can't write into our pipes.
+fn spawn(data: &Path) -> Result<std::process::Child, String> {
+    let fail = |error: std::io::Error| format!("Couldn't start the server: {error}");
+    std::fs::create_dir_all(data).map_err(fail)?;
+    let log = std::fs::File::options().create(true).append(true).open(data.join("server.log")).map_err(fail)?;
+    if log.metadata().is_ok_and(|meta| meta.len() > LOG_LIMIT) {
+        let _ = log.set_len(0);
+    }
+    let mut command = Command::new(server_path()?);
+    command.args(["serve", "--shared", "--data"]).arg(data);
+    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(log);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command.spawn().map_err(fail)
+}
+
+/// The socket that keeps the shared server alive while this window is open.
+struct Hold {
+    found: Found,
+    stream: TcpStream,
+}
+
+impl Hold {
+    /// Returns when the server is gone.
+    fn wait(&mut self) {
+        let mut buf = [0u8; 256];
+        while matches!(self.stream.read(&mut buf), Ok(n) if n > 0) {}
+    }
+}
+
+/// A websocket handshake by hand; nothing is sent over it afterwards.
+fn open_hold(found: &Found) -> Option<TcpStream> {
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], found.port));
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(1)).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    let request = format!(
+        "GET /hold?token={} HTTP/1.1\r\nHost: {address}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: bmFidWNvZGUtaG9sZC0xMg==\r\n\r\n",
+        found.token
+    );
+    stream.write_all(request.as_bytes()).ok()?;
+    let mut reply = Vec::new();
+    let mut byte = [0u8; 1];
+    while !reply.ends_with(b"\r\n\r\n") {
+        stream.read_exact(&mut byte).ok()?;
+        reply.push(byte[0]);
+    }
+    if !reply.starts_with(b"HTTP/1.1 101") {
+        return None;
+    }
+    stream.set_read_timeout(None).ok()?;
+    Some(stream)
+}
+
+/// The reason with the last lines of the server's latest run.
+fn describe(reason: &str, data: &Path) -> String {
+    let log = std::fs::read_to_string(data.join("server.log")).unwrap_or_default();
+    let run = log.rfind(START_MARK).map_or(log.as_str(), |start| &log[start..]);
+    let lines: Vec<&str> = run.lines().collect();
+    let tail = &lines[lines.len().saturating_sub(LOG_LINES)..];
+    if tail.is_empty() {
         return reason.to_owned();
     }
-    format!("{reason}\n{}", lines.iter().map(String::as_str).collect::<Vec<_>>().join("\n"))
+    format!("{reason}\n{}", tail.join("\n"))
+}
+
+/// The same rule as the server's: `NABUCODE_HOME`, else `~/.nabucode`.
+fn data_dir() -> PathBuf {
+    if let Some(home) = std::env::var_os("NABUCODE_HOME").filter(|value| !value.is_empty()) {
+        return home.into();
+    }
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    home.join(".nabucode")
 }
 
 #[cfg(not(feature = "embed-server"))]

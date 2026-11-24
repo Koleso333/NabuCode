@@ -10,15 +10,19 @@ use axum::routing::{get, post};
 use futures_util::{SinkExt, StreamExt};
 use nabu_protocol::{ClientMessage, Event, Listening, ProtocolError, ServerMessage};
 use nabu_server::Server;
+use shared::Holds;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
+
+mod shared;
 
 struct App {
     server: Server,
     token: String,
+    holds: Holds,
 }
 
-const USAGE: &str = "Usage: nabu serve [--data <folder>]\n\n  serve   runs the server for a NabuCode app; it prints its port and token and stops with the app";
+const USAGE: &str = "Usage: nabu serve [--shared] [--data <folder>]\n\n  serve           runs the server for a NabuCode app; it prints its port and token and stops with the app\n  serve --shared  one server for all NabuCode windows: found through server.json, stops after the last window";
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
@@ -26,32 +30,45 @@ async fn main() -> std::io::Result<()> {
         eprintln!("{USAGE}");
         std::process::exit(2);
     }
+    let data = data_dir();
+    let shared = std::env::args().any(|arg| arg == "--shared");
+    let _lock = if shared { Some(lock_or_exit(&data)?) } else { None };
     let app = Arc::new(App {
-        server: Server::new(&data_dir()),
+        server: Server::new(&data),
         token: new_token(),
+        holds: Holds::new(),
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
 
-    let listening = Listening {
-        port: listener.local_addr()?.port(),
-        token: app.token.clone(),
-    };
-    println!(
-        "{}",
-        serde_json::to_string(&listening).expect("serializable")
-    );
-
-    tokio::spawn(exit_with_parent());
+    if shared {
+        shared::announce(&data, port, &app.token)?;
+        tokio::spawn(shared::exit_when_unheld(app.holds.clone(), data));
+    } else {
+        let listening = Listening { port, token: app.token.clone() };
+        println!("{}", serde_json::to_string(&listening).expect("serializable"));
+        tokio::spawn(exit_with_parent());
+    }
     let starter = app.clone();
     tokio::spawn(async move { starter.server.start().await });
 
     let router = axum::Router::new()
         .route("/", get(connect))
+        .route("/hold", get(hold))
         .route("/terminal", get(connect_terminal))
         .route("/file", get(send_file))
         .route("/upload", post(receive_file).layer(DefaultBodyLimit::disable()))
         .with_state(app);
     axum::serve(listener, router).await
+}
+
+fn lock_or_exit(data: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let Some(lock) = shared::lock(data)? else {
+        eprintln!("another server already serves {}", data.display());
+        std::process::exit(shared::BUSY);
+    };
+    eprintln!("{} (version {})", shared::START_MARK, env!("CARGO_PKG_VERSION"));
+    Ok(lock)
 }
 
 /// The app holds our stdin; EOF means it is gone.
@@ -71,6 +88,22 @@ async fn connect(
         return Err(StatusCode::UNAUTHORIZED);
     }
     Ok(ws.on_upgrade(move |socket| serve_client(socket, app)))
+}
+
+/// A window keeps the shared server alive while this socket is open.
+async fn hold(
+    ws: WebSocketUpgrade,
+    Query(query): Query<HashMap<String, String>>,
+    State(app): State<Arc<App>>,
+) -> Result<Response, StatusCode> {
+    if query.get("token") != Some(&app.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let hold = app.holds.take();
+    Ok(ws.on_upgrade(move |mut socket| async move {
+        let _hold = hold;
+        while let Some(Ok(_)) = socket.recv().await {}
+    }))
 }
 
 async fn connect_terminal(

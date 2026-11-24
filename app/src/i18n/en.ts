@@ -60,6 +60,9 @@ export const en: Dictionary = {
     restart: "Restart",
     lost: "The connection to the server broke",
     offline: "No connection to the server",
+    mismatch: "Another version of NabuCode is already running",
+    mismatchDetails: (window: number, server?: number) => `This NabuCode: protocol ${window}\nRunning server: protocol ${server ?? "unknown"}\n\nClose the other NabuCode and press Retry.`,
+    retry: "Retry",
   },
   attachments: {
     drop: "Drop files here",

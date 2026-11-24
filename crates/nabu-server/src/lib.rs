@@ -481,6 +481,7 @@ impl Server {
         ServerInfo {
             name: "nabu".into(),
             version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol: nabu_protocol::PROTOCOL_VERSION,
         }
     }
 }

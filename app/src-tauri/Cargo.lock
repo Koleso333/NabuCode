@@ -1006,6 +1006,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "mime_guess",
+ "nabu-protocol",
  "serde",
  "serde_json",
  "tauri",
@@ -2193,6 +2194,14 @@ dependencies = [
  "serde",
  "thiserror 2.0.21",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "nabu-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -5318,3 +5327,15 @@ dependencies = [
  "syn 3.0.10",
  "winnow 1.0.5",
 ]
+
+[[patch.unused]]
+name = "ncore"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "ncore-mcp"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "ncore-tokio"
+version = "0.1.0"
