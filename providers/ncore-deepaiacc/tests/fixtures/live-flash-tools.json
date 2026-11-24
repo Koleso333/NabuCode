@@ -1,0 +1,27 @@
+{
+  "recorded_at": "2026-11-16T22:56:46Z",
+  "mode": "tools",
+  "requested_model": "glm-5.3-flash",
+  "model_requests": 2,
+  "tool_calls": 1,
+  "steps": 2,
+  "passed": true,
+  "balance_before": "77.98257",
+  "catalog_typical_price": "0",
+  "upstream_model": "zai/glm-5.3-flash",
+  "usage": {
+    "prompt_tokens": 337,
+    "completion_tokens": 19,
+    "total_tokens": 356,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0,
+      "video_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 2,
+      "image_tokens": 0
+    }
+  },
+  "balance_after": "77.98257"
+}

@@ -1,0 +1,20 @@
+[package]
+name = "ncore-antigravity"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+base64 = "0.23.1"
+bytes = "1.12.1"
+futures-util = "0.3.34"
+getrandom = "0.4.3"
+ncore.workspace = true
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+
+[dev-dependencies]
+ncore-mcp.workspace = true
+ncore-tokio.workspace = true
+tokio = { version = "1.53.3", features = ["full"] }

@@ -1,0 +1,12 @@
+/target
+/.cargo/config.toml
+node_modules
+**/dist/
+/app/build/
+/app/src-tauri/gen/
+*.exe
+*.log
+.env
+.env.*
+.DS_Store
+Thumbs.db

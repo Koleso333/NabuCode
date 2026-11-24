@@ -1,0 +1,45 @@
+[package]
+name = "nabu-server"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "nabu"
+path = "src/main.rs"
+
+[dependencies]
+nabu-protocol.workspace = true
+ncore.workspace = true
+ncore-antigravity.workspace = true
+ncore-claudesub.workspace = true
+ncore-chatgptsub.workspace = true
+ncore-zcodeacc.workspace = true
+ncore-grokacc.workspace = true
+ncore-workbuddyacc.workspace = true
+ncore-deepaiacc.workspace = true
+ncore-agentrouter-bp.workspace = true
+ncore-tokio.workspace = true
+base64 = "0.23.1"
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-std", "io-util", "sync", "time", "process", "fs"] }
+axum = { version = "0.8", features = ["ws"] }
+futures-util = "0.3"
+getrandom = "0.3"
+sha2 = "0.11.1"
+dirs = "6"
+ignore = "0.4"
+globset = "0.4"
+regex = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "gzip", "brotli", "deflate", "charset", "query"] }
+scraper = "0.29.0"
+htmd = "0.5.6"
+percent-encoding = "2"
+zip = { version = "9.2.1", default-features = false, features = ["deflate"] }
+similar = "2"
+notify = "8"
+portable-pty = "0.9"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_JobObjects", "Win32_Security"] }

@@ -1,0 +1,15 @@
+[package]
+name = "ncore-agentrouter-bp"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+ncore.workspace = true
+
+[dev-dependencies]
+bytes = "1.12.1"
+futures = "0.3.34"
+ncore-tokio.workspace = true
+serde_json = "1.0.154"
+tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread", "time"] }
