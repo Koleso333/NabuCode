@@ -19,7 +19,7 @@ const defaults = {
   chat: { responseStages: true, reasoning: true, expandCommands: false, diffSummary: false, expandEdits: false, progressBar: true },
   notifications: { agent: true, permissions: true, errors: false },
   sounds: { agent: "Staplebops 01", permissions: "Staplebops 02", errors: "Nope 03" },
-  compaction: { auto: true, threshold: 75, custom: false, model: "" },
+  compaction: { auto: true, threshold: 75, custom: false, model: "", effort: "" },
 };
 
 export type Preferences = typeof defaults;

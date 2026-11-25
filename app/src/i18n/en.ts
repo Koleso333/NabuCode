@@ -265,6 +265,7 @@ export const en: Dictionary = {
       model: "Compaction model",
       models: { default: "Default", custom: "Custom model" },
       selected: "Selected model",
+      choose: "Choose a model",
     },
     providers: {
       connected: "Connected providers",

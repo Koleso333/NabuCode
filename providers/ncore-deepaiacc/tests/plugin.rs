@@ -242,6 +242,49 @@ async fn model_lane_rejection_updates_metadata_without_replaying_the_post() {
     );
 }
 
+fn allowance_on(lane: u32, nonce: char) -> HttpResponse {
+    response(
+        200,
+        json!({"enabled":true,"balance":"65","granted":"65","lane_version":lane,"check_in":{"nonce":nonce.to_string().repeat(32),"seconds":600}}),
+    )
+}
+
+#[tokio::test]
+async fn check_in_moves_to_the_lane_the_server_reports() {
+    let mock = Arc::new(Mock::default());
+    mock.push(allowance_on(8, 'a'));
+    mock.push(allowance_on(8, 'b'));
+    mock.push(catalog());
+    let (_, _, plugin, store) = setup(mock.clone());
+    plugin.snapshot(&*mock).await.unwrap();
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(header(&requests[0].headers, "x-deepai-code-theos"), Some("7"));
+    assert_eq!(header(&requests[1].headers, "x-deepai-code-theos"), Some("8"));
+    assert_eq!(header(&requests[1].headers, "x-deepai-code-check-in"), None);
+    assert_eq!(header(&requests[2].headers, "x-deepai-code-theos"), Some("8"));
+    assert_eq!(plugin.lane().await.unwrap(), 8);
+    let saved = store.load().await.unwrap();
+    assert_eq!(saved.lane, 8);
+    assert_eq!(saved.check_in.unwrap().nonce, "b".repeat(32));
+}
+
+#[tokio::test]
+async fn check_in_stops_when_the_server_keeps_changing_the_lane() {
+    let mock = Arc::new(Mock::default());
+    mock.push(allowance_on(8, 'a'));
+    mock.push(allowance_on(9, 'b'));
+    let (_, _, plugin, _) = setup(mock.clone());
+    let error = plugin.snapshot(&*mock).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("/theos: DeepAI returned lane 9 after switching to lane 8")
+    );
+    assert_eq!(mock.requests().len(), 2);
+    assert_eq!(plugin.lane().await.unwrap(), 8);
+}
+
 #[tokio::test]
 async fn failed_lane_renewal_after_a_model_response_is_not_a_quota_failover() {
     let mock = Arc::new(Mock::default());

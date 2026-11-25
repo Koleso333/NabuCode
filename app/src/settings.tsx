@@ -2,7 +2,12 @@ import { createMemo, createResource, createSignal, For, onCleanup, onMount, Show
 import { Portal } from "solid-js/web";
 import { cancelPreview, previewTheme, saveTheme, themeChoice, themeIds, themeName, type ThemeMode } from "./theme";
 import { language, languageNames, setLanguage, tr, type Dictionary, type Language } from "./i18n";
-import { models } from "./data";
+import { models, type Model } from "./data";
+import { EffortPicker, effortName } from "./effort-picker";
+import { Selector } from "./selector";
+import { isHidden, serverModels } from "./catalog";
+import { effortFor, keyOf } from "./composer-model";
+import { demoMode } from "./chat/actions";
 import { preferences, setPreference, type EffortPickerKind, type MarkStyle, type Preferences } from "./preferences";
 import { catalog, catalogFailed, fontChoices, isDownloading, loadCatalog, previewFont, previewStack, type FontKind } from "./fonts";
 import { closeOnOutside, fitScroll, Glyph, Press, Ring, SearchField, SidebarRow } from "./controls";
@@ -10,6 +15,7 @@ import { Button, Empty, FilterField, Page, Row, Section, TextBox, TextRow, Toggl
 import { ModelsPage, ProvidersPage } from "./settings-providers";
 import { shells } from "./terminals";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
 import { describeEditor, findEditors, type Editor } from "./files";
 
 export type SettingsTab = "general" | "personalization" | "shortcuts" | "compaction" | "providers" | "models";
@@ -21,6 +27,7 @@ const tabs: { group?: keyof Dictionary["settings"]["groups"]; items: { id: Setti
 ];
 
 export function SettingsNav(props: { tab: SettingsTab; onTab: (tab: SettingsTab) => void; onBack: () => void }) {
+  const [version] = createResource(() => invoke<string>("app_version").catch(() => ""));
   return <div class="settings-nav">
     <div class="settings-nav-head">
       <Press label={tr().common.back} class="settings-back" onClick={props.onBack}><Glyph name="back" size={14} /></Press>
@@ -33,7 +40,7 @@ export function SettingsNav(props: { tab: SettingsTab; onTab: (tab: SettingsTab)
         <SidebarRow title={tr().settings.tabs[item.id]} icon={item.icon} large selected={props.tab === item.id} onClick={() => props.onTab(item.id)} />
       </>}</For>
     </>}</For>
-    <div class="settings-version"><span>{tr().settings.version}</span><span>v0.1.0-ev</span></div>
+    <div class="settings-version"><span>{tr().settings.version}</span><Show when={version()}><span>v{version()}</span></Show></div>
   </div>;
 }
 
@@ -339,6 +346,46 @@ function ShortcutsPage() {
   </Page>;
 }
 
+// The chat's model list, saved as "provider/model"; a model gone from the list shows by its id
+function CompactionModel() {
+  const text = () => tr().settings.compaction;
+  const [menu, setMenu] = createSignal<MenuPosition | null>(null);
+  const list = () => (demoMode ? models : serverModels()).filter(model => !isHidden(model));
+  const chosen = () => list().find(model => keyOf(model) === preferences.compaction.model);
+  const label = () => chosen()?.name ?? (preferences.compaction.model.split("/").slice(1).join("/") || text().choose);
+  let trigger!: HTMLButtonElement;
+  return <>
+    <button ref={trigger} type="button" class="choice" classList={{ open: !!menu() }} aria-label={text().selected}
+      onClick={() => setMenu(menu() ? null : placeMenu(trigger, 291, 360))}>
+      <Show when={chosen()}>{model => <Glyph name={model().provider.icon} size={15} />}</Show>
+      <span class="truncate">{label()}</span><Glyph name="chevron-down" size={13} />
+    </button>
+    <Show when={menu()}>{position => <Portal><div ref={element => closeOnOutside(element, trigger, () => setMenu(null))}
+      class="settings-model-menu" style={{ ...menuStyle(position()), height: undefined, "max-height": `${position().height}px` }}>
+      <Selector items={list()} selected={chosen()} name={model => model.name} details={model => model.provider.name}
+        group={model => model.provider} kind="model" onSelect={model => { setPreference("compaction", "model", keyOf(model)); setMenu(null); }} />
+    </div></Portal>}</Show>
+    <Show when={chosen()?.efforts.length ? chosen() : undefined}>{model => <CompactionEffort model={model()} />}</Show>
+  </>;
+}
+
+// The same picker as the composer's, under its button
+function CompactionEffort(props: { model: Model }) {
+  const [box, setBox] = createSignal<DOMRect | null>(null);
+  const level = () => effortFor(props.model, preferences.compaction.effort)!;
+  let trigger!: HTMLButtonElement;
+  return <>
+    <button ref={trigger} type="button" class="choice" classList={{ open: !!box() }} aria-label={tr().composer.effortTitle}
+      onClick={() => setBox(box() ? null : trigger.getBoundingClientRect())}>
+      <span>{effortName(level())}</span><Glyph name="chevron-down" size={13} />
+    </button>
+    <Show when={box()}>{rect => <Portal><div ref={element => closeOnOutside(element, trigger, () => setBox(null))}
+      class="settings-effort-menu" style={{ top: `${rect().bottom + 4}px`, right: `${innerWidth - rect().right}px` }}>
+      <EffortPicker levels={props.model.efforts} value={level()} onPick={next => setPreference("compaction", "effort", next)} onClose={() => setBox(null)} />
+    </div></Portal>}</Show>
+  </>;
+}
+
 function CompactionPage() {
   const text = () => tr().settings.compaction;
   return <Page title={tr().settings.tabs.compaction}>
@@ -351,8 +398,7 @@ function CompactionPage() {
           name={id => text().models[id]} onChange={value => setPreference("compaction", "custom", value === "custom")} />
       </Row>
       <Show when={preferences.compaction.custom}>
-        <Row title={text().selected}><Choice label={text().selected} options={models.map(model => model.name)}
-          value={preferences.compaction.model || models[1].name} onChange={model => setPreference("compaction", "model", model)} /></Row>
+        <Row title={text().selected}><CompactionModel /></Row>
       </Show>
     </Section>
   </Page>;

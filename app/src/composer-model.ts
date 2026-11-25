@@ -37,16 +37,18 @@ export function chosenModel(chatId: string | null, list: Model[]) {
   return list.find(model => model.provider.id === choice?.provider && model.id === choice.model) ?? list[0];
 }
 
-function defaultEffort(levels: string[]) {
-  return levels.includes("medium") ? "medium" : levels[Math.floor(levels.length / 2)];
+/** The first of `wanted` the model has, else its middle level; none for a model without levels. */
+export function effortFor(model: Model, ...wanted: (string | undefined)[]) {
+  const levels = model.efforts;
+  if (!levels.length) return undefined;
+  return wanted.find(level => level && levels.includes(level)) ?? (levels.includes("medium") ? "medium" : levels[Math.floor(levels.length / 2)]);
 }
 
 /** The effort to send with; none for a model without levels. */
 export function chosenEffort(chatId: string | null, model: Model) {
-  if (!model.efforts.length) return undefined;
   const choice = choiceOf(chatId);
   const own = choice?.provider === model.provider.id && choice.model === model.id ? choice.effort : undefined;
-  return [own, efforts[keyOf(model)]].find(level => level && model.efforts.includes(level)) ?? defaultEffort(model.efforts);
+  return effortFor(model, own, efforts[keyOf(model)]);
 }
 
 export const chosenFast = (chatId: string | null, model: Model) => model.fast && !!choiceOf(chatId)?.fast;

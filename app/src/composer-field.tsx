@@ -184,13 +184,14 @@ export function ComposerField(props: {
   function keyDown(event: KeyboardEvent) {
     if (event.isComposing) return;
     const plain = !event.ctrlKey && !event.altKey && !event.metaKey;
-    if (open() && plain) {
+    const ctrl = event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey;
+    const step = plain && event.key === "ArrowDown" || ctrl && event.code === "KeyS" ? 1 : plain && event.key === "ArrowUp" || ctrl && event.code === "KeyW" ? -1 : 0;
+    if (open() && step) {
       const count = items().length;
-      const step = event.key === "ArrowDown" || event.shiftKey && event.code === "KeyS" ? 1 : event.key === "ArrowUp" || event.shiftKey && event.code === "KeyW" ? -1 : 0;
-      if (step) {
-        event.preventDefault();
-        return setActive(index => (index + step + count) % count);
-      }
+      event.preventDefault();
+      return setActive(index => (index + step + count) % count);
+    }
+    if (open() && plain) {
       if (!event.shiftKey && (event.key === "Enter" || event.key === "Tab" || event.key === "ArrowRight")) {
         event.preventDefault();
         return choose(items()[active()]);
@@ -201,8 +202,8 @@ export function ComposerField(props: {
         return setDismissed(trigger());
       }
     }
-    // Tab after the bare sign opens the full list
-    if (plain && !event.shiftKey && event.key === "Tab" && trigger() && !trigger()!.query) {
+    // Tab or a list step after the bare sign opens the full list
+    if ((step || plain && !event.shiftKey && event.key === "Tab") && trigger() && !trigger()!.query) {
       event.preventDefault();
       setDismissed(undefined);
       return setOpened(trigger());
@@ -266,18 +267,32 @@ function MarkList(props: {
   let list!: HTMLDivElement;
   let panel!: HTMLDivElement;
   let description: HTMLDivElement | undefined;
-  const [row, setRow] = createSignal({ top: 0, right: true });
+  const [row, setRow] = createSignal({ top: 0, right: true, shown: true });
+  let pointer = { x: 0, y: 0 };
+  let wheelAt = 0;
   // The description goes beside the active row, on the side the window has room on, and rises so it never covers the field
   function place() {
     const element = list.children[props.active] as HTMLElement | undefined;
     if (!element) return;
-    const top = Math.min(element.offsetTop - list.scrollTop, panel.clientHeight - (description?.offsetHeight ?? 0));
-    setRow({ top, right: panel.getBoundingClientRect().right + 306 <= innerWidth });
+    const rowTop = element.offsetTop - list.scrollTop;
+    const top = Math.min(rowTop, panel.clientHeight - (description?.offsetHeight ?? 0));
+    const shown = rowTop + element.offsetHeight > 0 && rowTop < list.clientHeight;
+    setRow({ top, right: panel.getBoundingClientRect().right + 306 <= innerWidth, shown });
+  }
+  // Wheel scrolling moves the choice to the row under the cursor, as hover would
+  function scrolled() {
+    if (performance.now() - wheelAt < 400) {
+      const element = document.elementFromPoint(pointer.x, pointer.y)?.closest(".mark-row");
+      const index = element ? Array.prototype.indexOf.call(list.children, element) : -1;
+      if (index >= 0 && index !== props.active) props.onActive(index);
+    }
+    place();
   }
   createEffect(on(() => [props.active, props.items], () => requestAnimationFrame(place)));
   return <div ref={panel} class="mark-list panel-frame" style={{ left: `${Math.max(8, props.left)}px`, bottom: `${props.bottom}px` }}
     onPointerDown={event => event.preventDefault()}>
-    <div ref={element => { list = element; props.listRef(element); }} class="mark-rows" onScroll={place}>
+    <div ref={element => { list = element; props.listRef(element); }} class="mark-rows" onScroll={scrolled}
+      onWheel={event => { pointer = { x: event.clientX, y: event.clientY }; wheelAt = performance.now(); }}>
       <For each={props.items}>{(item, index) =>
         <div class="mark-row" classList={{ active: index() === props.active }}
           onPointerMove={() => { if (index() !== props.active) props.onActive(index()); }} onClick={() => props.onChoose(item)}>
@@ -285,7 +300,7 @@ function MarkList(props: {
         </div>}</For>
     </div>
     <Scrollbar target={() => list} class="mark-scroll" />
-    <Show when={props.items[props.active]?.description}>{text =>
+    <Show when={row().shown && props.items[props.active]?.description}>{text =>
       <div ref={description} class="mark-description panel-frame" classList={{ left: !row().right }} style={{ top: `${row().top}px` }}>{text()}</div>}</Show>
   </div>;
 }

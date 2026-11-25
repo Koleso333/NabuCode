@@ -90,7 +90,7 @@ export function toolLabel(part: ToolPart): ToolLabel {
 
 export const agentName = (type: unknown) => typeof type === "string" && type ? `${tr().chat.tool.agent} ${type[0].toUpperCase()}${type.slice(1)}` : tr().chat.tool.agent;
 
-const agentColors = ["var(--icon-agent-build-base)", "var(--icon-agent-plan-base)", "var(--icon-agent-docs-base)", "var(--icon-agent-ask-base)", "var(--syntax-type)", "var(--syntax-string)"];
+const agentColors = ["var(--agent-build)", "var(--agent-plan)", "var(--agent-docs)", "var(--agent-ask)", "var(--syntax-type)", "var(--syntax-string)"];
 export function agentColor(name: string) {
   let hash = 0;
   for (const char of name) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;

@@ -145,6 +145,18 @@ impl Lanes {
         }
     }
 
+    /// Called when a successful check-in names a lane other than the one we sent.
+    pub(crate) async fn adopt(&self, sent: u32, reported: u32) -> Result<u32, Error> {
+        validate(reported).map_err(fail)?;
+        let mut state = self.state.lock().await;
+        let current = self.load(&mut state).await?;
+        if current != sent {
+            return Ok(current);
+        }
+        state.pending = Some(reported);
+        self.persist(&mut state).await
+    }
+
     async fn persist(&self, state: &mut State) -> Result<u32, Error> {
         let lane = state.pending.expect("verified DeepAI lane pending");
         self.store

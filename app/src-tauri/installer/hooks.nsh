@@ -1,16 +1,13 @@
-; "NabuCode v1.2.3" in place of the NSIS branding at the bottom; the version comes from the setup's own file
+; "NabuCode v1.2.3" in place of the NSIS branding at the bottom. Tauri defines VERSION only after this file,
+; so the full version (with -beta.N) is read from tauri.conf.json at compile time
+!searchparse /file "${__FILEDIR__}\..\tauri.conf.json" '"version": "' NABU_VERSION '"'
 !define MUI_CUSTOMFUNCTION_GUIINIT NabuBranding
 !define MUI_CUSTOMFUNCTION_UNGUIINIT un.NabuBranding
 !macro NABU_BRANDING
-  GetDLLVersion "$EXEPATH" $R0 $R1
-  IntOp $R2 $R0 >> 16
-  IntOp $R3 $R0 & 0xFFFF
-  IntOp $R4 $R1 >> 16
-  StrCpy $R5 "$(^Name) v$R2.$R3.$R4"
   GetDlgItem $R6 $HWNDPARENT 1028
-  SendMessage $R6 ${WM_SETTEXT} 0 "STR:$R5"
+  SendMessage $R6 ${WM_SETTEXT} 0 "STR:$(^Name) v${NABU_VERSION}"
   GetDlgItem $R6 $HWNDPARENT 1256
-  SendMessage $R6 ${WM_SETTEXT} 0 "STR:$R5"
+  SendMessage $R6 ${WM_SETTEXT} 0 "STR:$(^Name) v${NABU_VERSION}"
 !macroend
 Function NabuBranding
   !insertmacro NABU_BRANDING

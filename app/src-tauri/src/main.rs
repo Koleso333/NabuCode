@@ -24,6 +24,13 @@ fn server_restart(sidecar: tauri::State<Sidecar>) {
     sidecar.restart();
 }
 
+/// Only scripts/release.ps1 sets NABUCODE_RELEASE; any other build from source is marked -dev
+#[tauri::command]
+fn app_version(app: tauri::AppHandle) -> String {
+    let version = app.package_info().version.to_string();
+    if option_env!("NABUCODE_RELEASE").is_some() { version } else { format!("{version}-dev") }
+}
+
 fn project_arg() -> Option<String> {
     std::env::args().find_map(|arg| arg.strip_prefix("--project=").map(str::to_owned))
 }
@@ -135,7 +142,7 @@ fn main() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![server_status, server_restart, start_folder, project_root, theme_choice, open_project, show_main, fonts::font_catalog, fonts::font_install, dropped::dropped_items, dropped::read_dropped, dropped::clipboard_files, editors::editors, editors::editor_info, editors::open_in_editor, editors::reveal_in_explorer])
+        .invoke_handler(tauri::generate_handler![app_version, server_status, server_restart, start_folder, project_root, theme_choice, open_project, show_main, fonts::font_catalog, fonts::font_install, dropped::dropped_items, dropped::read_dropped, dropped::clipboard_files, editors::editors, editors::editor_info, editors::open_in_editor, editors::reveal_in_explorer])
         .run(tauri::generate_context!())
         .expect("failed to run NabuCode");
 }

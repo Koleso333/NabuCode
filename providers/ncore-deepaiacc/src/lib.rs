@@ -55,6 +55,11 @@ struct State {
     catalog_at: Option<Instant>,
 }
 
+enum CheckInReply {
+    Accepted(Allowance),
+    OtherLane(u32),
+}
+
 pub struct DeepAIAcc {
     store: Arc<dyn CredentialStore>,
     client: ClientInfo,
@@ -184,6 +189,26 @@ impl DeepAIAcc {
         state: &mut State,
         credentials: &mut Credentials,
     ) -> Result<Allowance, Error> {
+        let reported = match self.send_check_in(sender, state, credentials).await? {
+            CheckInReply::Accepted(allowance) => return Ok(allowance),
+            CheckInReply::OtherLane(lane) => lane,
+        };
+        let lane = self.lanes.adopt(credentials.lane, reported).await?;
+        Self::align_lane(state, credentials, lane);
+        match self.send_check_in(sender, state, credentials).await? {
+            CheckInReply::Accepted(allowance) => Ok(allowance),
+            CheckInReply::OtherLane(reported) => Err(fail(format!(
+                "DeepAI returned lane {reported} after switching to lane {lane}"
+            ))),
+        }
+    }
+
+    async fn send_check_in(
+        &self,
+        sender: Sender<'_>,
+        state: &mut State,
+        credentials: &mut Credentials,
+    ) -> Result<CheckInReply, Error> {
         state.allowance = None;
         let mut req = api::request(credentials, "/theos", credentials.lane)?;
         req.headers.push((
@@ -203,12 +228,10 @@ impl DeepAIAcc {
         } else {
             None
         };
-        if allowance
-            .as_ref()
-            .and_then(|a| a.lane_version)
-            .is_some_and(|lane| lane != credentials.lane)
+        if let Some(lane) = allowance.as_ref().and_then(|a| a.lane_version)
+            && lane != credentials.lane
         {
-            return Err(fail("DeepAI returned a different lane version"));
+            return Ok(CheckInReply::OtherLane(lane));
         }
         if allowance.as_ref().is_some_and(|a| a.enabled)
             && mark.is_none()
@@ -226,7 +249,7 @@ impl DeepAIAcc {
         }
         let allowance = allowance.unwrap();
         state.allowance = Some(allowance.clone());
-        Ok(allowance)
+        Ok(CheckInReply::Accepted(allowance))
     }
 
     fn align_lane(state: &mut State, credentials: &mut Credentials, lane: u32) {

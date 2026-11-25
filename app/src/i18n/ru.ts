@@ -270,6 +270,7 @@ export const ru = {
       model: "Модель сжатия",
       models: { default: "По умолчанию", custom: "Своя модель" },
       selected: "Выбранная модель",
+      choose: "Выбрать модель",
     },
     providers: {
       connected: "Подключённые",
