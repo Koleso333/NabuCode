@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, untrack, type JSX } from "solid-js";
 import { render } from "solid-js/web";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
@@ -35,6 +35,7 @@ import { TerminalPanel } from "./terminal-panel";
 import { Selector } from "./selector";
 import { ComposerField, type FieldControl } from "./composer-field";
 import { hasContent, marksOf, piecesOf, plainText, prepend, type Piece } from "./marks";
+import { draftOf, keepDraft, restoreFiles } from "./drafts";
 import { DiffView, FilePanel, type FilesTab, type OpenedDiff } from "./file-panel";
 import { loadTerminals, openTerminal, terminalsOf } from "./terminals";
 import "./chat/chat.css";
@@ -322,6 +323,7 @@ function App() {
 
   function newSession() {
     closeSettings();
+    setOpenedDiff(null);
     setAgentChat(null);
     if (!session()) {
       requestAnimationFrame(() => composerField.focus());
@@ -329,8 +331,6 @@ function App() {
     }
     setProject(session()?.project ?? project());
     setActiveChat(null);
-    setDraft([]);
-    clearAttachments();
     setPanel(null);
     setError(null);
     requestAnimationFrame(() => composerField.focus());
@@ -340,8 +340,6 @@ function App() {
     setProject(next.project);
     setAgentChat(null);
     setActiveChat({ session: next });
-    setDraft([]);
-    clearAttachments();
     setPanel(null);
     setError(null);
   }
@@ -359,6 +357,24 @@ function App() {
     setAttachments([]);
   }
   const attachFiles = () => void addAttachments(pickFiles(() => filePicker.click()));
+  // Each chat keeps what was typed in it, and a new chat one per project; they live through restarts
+  const draftKey = createMemo(() => session()?.id ?? `new:${serverPath(project().path).toLowerCase()}`);
+  let restoring: string | undefined;
+  const keepCurrent = (key: string) => keepDraft(key, draft(), restoring === key ? undefined : attachments());
+  createEffect(on(draftKey, (key, previous) => {
+    if (previous !== undefined) keepCurrent(previous);
+    clearAttachments();
+    const saved = draftOf(key);
+    restoring = saved?.files.length ? key : undefined;
+    setDraft(saved?.pieces ?? []);
+    if (!saved?.files.length) return;
+    void restoreFiles(saved.files).then(files => {
+      if (restoring !== key) return files.forEach(releaseAttachment);
+      restoring = undefined;
+      setAttachments(list => [...files, ...list]);
+    });
+  }));
+  createEffect(on([draft, attachments], () => keepCurrent(untrack(draftKey)), { defer: true }));
   const attachmentProblem = (file: Attachment) => file.image && !model().images ? tr().attachments.unsupported : undefined;
   const canSend = () => !agentChat() && !!activeProject().path && (hasContent(draft()) || attachments().length > 0) && !attachments().some(attachmentProblem);
   // A command runs on a chat that exists and is quiet; otherwise its mark turns red and nothing is sent

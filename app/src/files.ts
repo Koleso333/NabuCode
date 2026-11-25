@@ -32,7 +32,7 @@ export async function toggleFolder(directory: string, path: string) {
 }
 
 export function collapseAll(directory: string) {
-  setTrees(treeKey(directory), "open", {});
+  setTrees(treeKey(directory), produce(tree => { tree.open = {}; }));
 }
 
 // A folder that disappeared is dropped with its open mark

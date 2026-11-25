@@ -53,7 +53,8 @@ export type FileChange = { filePath: string; relativePath: string; type: "add" |
 const [chats, setChats] = createStore<Record<string, Chat>>({});
 export { chats };
 
-let lastId = 0;
+// Started from the clock: saved drafts keep their files' ids across restarts
+let lastId = Date.now();
 export const newId = (prefix: string) => `${prefix}-${++lastId}`;
 
 export function ensureChat(id: string, title: string, extra?: Partial<Chat>) {

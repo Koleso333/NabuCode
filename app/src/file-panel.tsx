@@ -159,8 +159,10 @@ export function FilePanel(props: {
       </Press>
       <Press label={text().all} class="file-tab" selected={props.tab === "files"} onClick={() => props.onTab("files")}>{text().all}</Press>
       <span class="files-panel-space" />
-      <IconButton name="dots-vertical" label={text().more} size={15} width={23} class="files-panel-more" selected={!!more()}
-        onClick={() => { const box = list.getBoundingClientRect(); setMore({ x: box.right - 4, y: box.top }); }} />
+      <Show when={props.tab === "files"}>
+        <IconButton name="dots-vertical" label={text().more} size={15} width={23} class="files-panel-more" selected={!!more()}
+          onClick={() => { const box = list.getBoundingClientRect(); setMore({ x: box.right - 4, y: box.top }); }} />
+      </Show>
     </div>
     <Show when={props.tab === "changes"}>
       <div class="file-switch">
@@ -195,7 +197,7 @@ export function FilePanel(props: {
       <MenuItem icon="copy" label={text().copyRelative} onClick={() => act(() => navigator.clipboard.writeText(nativePath(props.directory, target().path)))} />
     </ContextMenu>}</Show>
     <Show when={more()}>{position => <ContextMenu x={position().x - 234} y={position().y} label={text().more} onClose={() => setMore(null)}>
-      <MenuItem icon="minus" label={text().collapseAll} onClick={() => { setMore(null); collapseAll(props.directory); props.onTab("files"); }} />
+      <MenuItem icon="minus" label={text().collapseAll} onClick={() => { setMore(null); collapseAll(props.directory); }} />
     </ContextMenu>}</Show>
   </aside>;
 }

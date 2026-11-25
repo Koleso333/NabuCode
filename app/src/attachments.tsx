@@ -97,7 +97,7 @@ async function pathAttachment(item: DroppedItem): Promise<Attachment> {
   return bytes ? { ...attachment, ...await preview(new File([bytes], item.name, { type: mime })) } : attachment;
 }
 
-async function readPaths(paths: string[]): Promise<Attachment[]> {
+export async function readPaths(paths: string[]): Promise<Attachment[]> {
   return Promise.all((await invoke<DroppedItem[]>("dropped_items", { paths })).map(pathAttachment));
 }
 
