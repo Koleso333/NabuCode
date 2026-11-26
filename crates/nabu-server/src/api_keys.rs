@@ -188,6 +188,8 @@ struct State {
     next: usize,
     experimental_context: bool,
     direct_checks: bool,
+    refreshed_at: Option<Instant>,
+    sent_quota: Option<CoArenaQuota>,
 }
 
 pub struct ApiKeyAccounts {
@@ -412,8 +414,17 @@ impl ApiKeyAccounts {
         .await;
     }
 
+    /// Background refresh; CoArena allows 120 requests per minute, so it runs at most once a minute.
     pub async fn refresh_coarena(&self) {
-        self.check_keys(|_| true, false).await;
+        let recent = self
+            .state
+            .lock()
+            .unwrap()
+            .refreshed_at
+            .is_some_and(|at| at.elapsed() < Duration::from_secs(60));
+        if !recent {
+            self.check_keys(|_| true, false).await;
+        }
     }
 
     pub async fn check_added(&self, added: Vec<String>) {
@@ -464,6 +475,7 @@ impl ApiKeyAccounts {
             _ = checks => {}
             _ = stop, if !full => return,
         }
+        self.state.lock().unwrap().refreshed_at = Some(Instant::now());
         self.quota_changed();
     }
 
@@ -538,9 +550,17 @@ impl ApiKeyAccounts {
             let Some(entry) = state.entries.iter_mut().find(|entry| entry.key == key) else {
                 return;
             };
-            let status = match &limits {
-                Ok(limits) => limits.status(),
-                Err(message) => check_error(message.clone(), credentials),
+            let status = match (&limits, &entry.coarena) {
+                (Ok(limits), _) => limits.status(),
+                // A per-minute limit says nothing about the daily quota, so the last known one decides.
+                (Err(message), Some(saved)) if message.starts_with("HTTP 429:") => {
+                    if saved.reset > Utc::now() {
+                        saved.status()
+                    } else {
+                        AccountStatus::Work
+                    }
+                }
+                (Err(message), _) => check_error(message.clone(), credentials),
             };
             let changed = status != entry.status || models.is_some();
             entry.status = status;
@@ -550,7 +570,7 @@ impl ApiKeyAccounts {
             if account.is_some() {
                 entry.account = account;
             }
-            if limits.is_ok() || !matches!(entry.status, AccountStatus::Limit { .. }) {
+            if limits.is_ok() || matches!(entry.status, AccountStatus::Error { .. }) {
                 entry.coarena = limits.ok();
             }
             changed
@@ -933,11 +953,18 @@ impl ApiKeyAccounts {
     }
 
     fn quota_changed(&self) {
-        if matches!(self.provider, KeyProvider::CoArena) {
-            let _ = self.events.send(Event::CoArenaQuota {
-                quota: self.coarena_quota(),
-            });
+        if !matches!(self.provider, KeyProvider::CoArena) {
+            return;
         }
+        // Every quota event makes the GUI ask for usage again, which starts another refresh.
+        let quota = self.coarena_quota();
+        let mut state = self.state.lock().unwrap();
+        if state.sent_quota.as_ref() == Some(&quota) {
+            return;
+        }
+        state.sent_quota = Some(quota.clone());
+        drop(state);
+        let _ = self.events.send(Event::CoArenaQuota { quota });
     }
 }
 
@@ -1303,8 +1330,11 @@ mod tests {
                 } else if let Some(message) = self.router_busy {
                     json!({"error":{"message":message}})
                 } else if limits {
+                    // One reset time, like the real day: a moving one would be a new quota on every check
+                    static RESET: std::sync::LazyLock<i64> =
+                        std::sync::LazyLock::new(|| (Utc::now() + chrono::Duration::hours(1)).timestamp_millis());
                     json!({"data":{"usd_per_day":5,"today":{"used_usd":2,"left_usd":3,"requests_left":null,
-                        "resets_at":(Utc::now() + chrono::Duration::hours(1)).timestamp_millis()}}})
+                        "resets_at":*RESET}}})
                 } else if keys {
                     json!({"data":[{"id":"shared-account-key-id"}]})
                 } else if messages {
@@ -1864,10 +1894,7 @@ mod tests {
         assert!(!load().direct_checks());
         coarena.check_all().await;
         assert_eq!(proxy.seen.lock().unwrap().len(), 1);
-        assert!(matches!(
-            coarena.list()[0].status,
-            AccountStatus::Limit { .. }
-        ));
+        assert_eq!(coarena.list()[0].status, AccountStatus::Work);
         assert_eq!(coarena.coarena_quota().total_usd, 5.0);
 
         Arc::get_mut(&mut coarena).unwrap().core = Core::builder(Arc::new(Mock {
@@ -1883,6 +1910,54 @@ mod tests {
         assert_eq!(coarena.coarena_quota().total_usd, 0.0);
         let _ = std::fs::remove_file(path.join("coarena-keys.json"));
         let _ = std::fs::remove_file(path.join("coarena-direct-checks.json"));
+        let _ = std::fs::remove_dir(path);
+    }
+
+    #[tokio::test]
+    async fn coarena_background_refresh_runs_once_a_minute_and_reports_only_changes() {
+        let net = Arc::new(Mock::default());
+        let (_, path) = accounts(net.clone());
+        let (events, mut received) = broadcast::channel(64);
+        let coarena = ApiKeyAccounts::load(KeyProvider::CoArena, &path, net.clone(), events);
+        coarena.add(vec!["coarena-key".into()]).unwrap();
+        coarena.check_all().await;
+        let quota_events = |received: &mut broadcast::Receiver<Event>| {
+            std::iter::from_fn(|| received.try_recv().ok())
+                .filter(|event| matches!(event, Event::CoArenaQuota { .. }))
+                .count()
+        };
+        assert_eq!(quota_events(&mut received), 1);
+
+        let sent = net.seen.lock().unwrap().len();
+        coarena.refresh_coarena().await;
+        assert_eq!(net.seen.lock().unwrap().len(), sent);
+
+        coarena.state.lock().unwrap().refreshed_at = None;
+        coarena.refresh_coarena().await;
+        assert!(net.seen.lock().unwrap().len() > sent);
+        assert_eq!(quota_events(&mut received), 0);
+        coarena.remove(None);
+        let _ = std::fs::remove_file(path.join("coarena-keys.json"));
+        let _ = std::fs::remove_dir(path);
+    }
+
+    #[tokio::test]
+    async fn coarena_rate_limit_without_a_known_quota_still_shows_the_limit() {
+        let net = Arc::new(Mock {
+            router_busy: Some(ROUTER_BUSY),
+            ..Mock::default()
+        });
+        let (_, path) = accounts(net.clone());
+        let coarena =
+            ApiKeyAccounts::load(KeyProvider::CoArena, &path, net, broadcast::channel(32).0);
+        coarena.add(vec!["coarena-key".into()]).unwrap();
+        coarena.check_all().await;
+        assert!(matches!(
+            coarena.list()[0].status,
+            AccountStatus::Limit { .. }
+        ));
+        coarena.remove(None);
+        let _ = std::fs::remove_file(path.join("coarena-keys.json"));
         let _ = std::fs::remove_dir(path);
     }
 

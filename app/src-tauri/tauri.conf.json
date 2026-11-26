@@ -3,7 +3,7 @@
   "productName": "NabuCode",
   "mainBinaryName": "NabuCode",
   "identifier": "dev.nabu.everyend",
-  "version": "0.1.0",
+  "version": "0.1.1-nightly.261126",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1431",

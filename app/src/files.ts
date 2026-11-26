@@ -1,7 +1,7 @@
 import { createStore, produce, reconcile } from "solid-js/store";
 import { invoke } from "@tauri-apps/api/core";
 import type { FileEntry, GitChange } from "@nabu/protocol";
-import { onConnected, onServerEvent, request } from "./server";
+import { onConnected, onServerEvent, request, ServerError } from "./server";
 import { preferences } from "./preferences";
 import { samePath } from "./projects";
 
@@ -35,13 +35,13 @@ export function collapseAll(directory: string) {
   setTrees(treeKey(directory), produce(tree => { tree.open = {}; }));
 }
 
-// A folder that disappeared is dropped with its open mark
+// A folder the server can't read is dropped with its open mark; a lost connection keeps what was shown
 async function loadFolder(key: string, path: string) {
   try {
     const entries = await request("fileList", { directory: trees[key].directory, path });
     setTrees(key, "folders", path, reconcile(entries, { key: "name" }));
-  } catch {
-    setTrees(key, produce(tree => { delete tree.folders[path]; delete tree.open[path]; }));
+  } catch (error) {
+    if (error instanceof ServerError) setTrees(key, produce(tree => { delete tree.folders[path]; delete tree.open[path]; }));
   }
 }
 

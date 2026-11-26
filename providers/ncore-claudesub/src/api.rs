@@ -6,7 +6,8 @@ use ncore::{Error, HttpRequest, HttpResponse, Next, Transport};
 use serde_json::Value;
 
 pub const API_BASE: &str = "https://api.anthropic.com";
-pub const USER_AGENT: &str = concat!("nabucore-claudesub/", env!("CARGO_PKG_VERSION"));
+/// Interactive Claude Code CLI; it carries no machine details.
+pub const USER_AGENT: &str = "claude-cli/2.1.322 (external, cli)";
 const MAX_BODY: usize = 2 * 1024 * 1024;
 
 pub(crate) fn fail(message: impl Into<String>) -> Error {

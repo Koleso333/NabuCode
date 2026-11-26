@@ -54,9 +54,11 @@ export function FilePanel(props: {
   // Paths, so a card stays open when git reports the file again
   const [expanded, setExpanded] = createSignal(new Set<string>());
   let list!: HTMLDivElement;
-  createEffect(() => void showFiles(props.directory));
+  // The path as a value: a new project object with the same path is no project change
+  const directory = createMemo(() => props.directory);
+  createEffect(() => void showFiles(directory()));
 
-  const tree = () => fileTree(props.directory);
+  const tree = () => fileTree(directory());
   const gitChanges = createMemo((): Change[] => tree()?.changes ?? []);
   const changes = createMemo(() => source() === "git" ? gitChanges() : sessionChanges(props.messages ?? []));
   const changeOf = createMemo(() => new Map(gitChanges().map(change => [change.path, change])));
@@ -66,26 +68,36 @@ export function FilePanel(props: {
     return folders;
   });
   const changedFolder = (path: string) => changedFolders().has(path);
-  // Open folders laid out as one list, so only the visible rows are drawn
+  // Open folders laid out as one list, so only the visible rows are drawn.
+  // An unchanged row is the same object as before, so opening a folder doesn't redraw the others.
+  let knownRows = new Map<string, TreeRow>();
   const treeRows = createMemo(() => {
     const current = tree();
     const rows: TreeRow[] = [];
+    const fresh = new Map<string, TreeRow>();
+    const add = (path: string, depth: number, dim: boolean, entry?: FileEntry) => {
+      const known = knownRows.get(path);
+      const row = known && known.depth === depth && known.dim === dim && known.entry === entry ? known : { path, depth, dim, entry };
+      fresh.set(path, row);
+      rows.push(row);
+    };
     const walk = (folder: string, depth: number, dim: boolean) => {
       const entries = current?.folders[folder];
       if (!entries) return;
-      if (!entries.length && folder) rows.push({ path: `${folder}/`, depth, dim });
+      if (!entries.length && folder) add(`${folder}/`, depth, dim);
       for (const entry of entries) {
         const path = childPath(folder, entry.name);
         const dimmed = dim || entry.ignored;
-        rows.push({ path, depth, dim: dimmed, entry });
+        add(path, depth, dimmed, entry);
         if (entry.dir && current!.open[path]) walk(path, depth + 1, dimmed);
       }
     };
     walk("", 0, false);
+    knownRows = fresh;
     return rows;
   });
   const loading = () => props.tab === "files" ? !tree()?.folders[""] : source() === "git" && !tree()?.ready;
-  createEffect(on([() => props.tab, source, () => props.directory], () => { list.scrollTop = 0; }, { defer: true }));
+  createEffect(on([() => props.tab, source, directory], () => { list.scrollTop = 0; }, { defer: true }));
 
   const full = (path: string) => fullPath(props.directory, path);
   const open = (path: string) => { if (localServer()) void openInEditor(full(path)).catch(() => {}); };

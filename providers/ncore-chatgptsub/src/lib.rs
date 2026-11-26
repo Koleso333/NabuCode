@@ -1,6 +1,7 @@
 //! ChatGPT subscription compatibility adapter for the Codex Responses backend.
 //! The host owns accounts, durable storage, routing and transport.
 
+mod agent;
 mod api;
 pub mod credentials;
 pub mod oauth;
@@ -294,7 +295,7 @@ fn authenticate(request: &mut HttpRequest, credentials: &Credentials) {
         ("originator".into(), "codex_cli_rs".into()),
         (
             "user-agent".into(),
-            concat!("nabucore-chatgptsub/", env!("CARGO_PKG_VERSION")).into(),
+            agent::for_account(&credentials.account_id),
         ),
         (
             "accept".into(),

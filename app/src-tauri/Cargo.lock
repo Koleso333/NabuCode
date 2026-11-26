@@ -1002,7 +1002,7 @@ dependencies = [
 
 [[package]]
 name = "everyend-tauri"
-version = "0.1.0"
+version = "0.1.1-nightly.261126"
 dependencies = [
  "base64 0.22.1",
  "mime_guess",
@@ -2198,7 +2198,7 @@ dependencies = [
 
 [[package]]
 name = "nabu-protocol"
-version = "0.1.0"
+version = "0.1.1-nightly.261126"
 dependencies = [
  "serde",
  "serde_json",
@@ -5327,3 +5327,15 @@ dependencies = [
  "syn 3.0.10",
  "winnow 1.0.5",
 ]
+
+[[patch.unused]]
+name = "ncore"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "ncore-mcp"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "ncore-tokio"
+version = "0.1.0"

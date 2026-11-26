@@ -802,7 +802,7 @@ function App() {
     </aside>
     <Show when={sidebarOpen()}><div class="sidebar-resize" style={{ left: `${sidebarWidth() - 3}px` }} onPointerDown={startResize} /></Show>
 
-    <main ref={workspace} class="workspace panel-frame" classList={{ "sidebar-open": sidebarOpen(), "files-open": filesShown() }}
+    <main ref={workspace} class="workspace panel-frame" classList={{ "sidebar-open": sidebarOpen(), "files-open": filesShown(), "terminal-open": terminalShown() }}
       style={{ left: `${visibleSidebar()}px`, right: `${visibleFiles()}px`, bottom: terminalShown() ? `${terminalHeight()}px` : undefined, "--composer-left": `${composerLeft()}px`, "--composer-right": `${composerRight()}px`, "--composer-width": `${composerWidth()}px`, "--field-height": `${fieldHeight() + queueHeight()}px`, "--queue-height": `${queueHeight()}px`, "--chip-width": `${chipWidth()}px`, "--dock-height": `${dockHeight()}px`, "--tray-height": attachments().length && !agentChat() ? "122px" : "0px" }}>
       <Show when={!settingsOpen()} fallback={<SettingsPanel tab={settingsTab()} />}>
       <Show when={!session()}><div class="watermark"><img src="/watermark.png" width="325" height="77" alt="" /><span>Every End</span></div></Show>

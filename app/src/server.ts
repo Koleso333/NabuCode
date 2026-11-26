@@ -93,13 +93,16 @@ function failPending() {
   pending.clear();
 }
 
+/** The server answered with an error, as opposed to a request lost with the connection. */
+export class ServerError extends Error {}
+
 function receive(message: ServerMessage) {
   if (message.type === "event") return listeners.forEach(listener => listener(message.event));
   if (message.id === null) return console.error("[server]", message.type === "error" ? message.error.message : message);
   const request = pending.get(message.id);
   pending.delete(message.id);
   if (message.type === "reply") request?.resolve(message.result);
-  else request?.reject(new Error(message.error.message));
+  else request?.reject(new ServerError(message.error.message));
 }
 
 export function request<M extends keyof Requests>(

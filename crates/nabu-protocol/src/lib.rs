@@ -682,7 +682,7 @@ pub struct Credits {
     pub reset: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoArenaQuota {
     pub total_usd: f64,

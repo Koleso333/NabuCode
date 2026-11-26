@@ -51,7 +51,7 @@ export function TerminalPanel(props: { directory: string; left: number; height: 
     window.addEventListener("pointerup", stop);
   }
 
-  return <section class="terminal-panel" style={{ left: `${props.left}px`, height: `${props.height}px` }}>
+  return <section class="terminal-panel" classList={{ "beside-sidebar": props.left > 0 }} style={{ left: `${props.left}px`, height: `${props.height}px` }}>
     <div class="terminal-resize" onPointerDown={startResize} />
     <div ref={bar} class="terminal-bar">
       <div class="terminal-tabs-frame" classList={{ "at-start": edges().start, "at-end": edges().end }}>
