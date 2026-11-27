@@ -8,7 +8,7 @@ use axum::http::{StatusCode, header};
 use axum::response::Response;
 use axum::routing::{get, post};
 use futures_util::{SinkExt, StreamExt};
-use nabu_protocol::{ClientMessage, Event, Listening, ProtocolError, ServerMessage};
+use nabu_protocol::{ClientMessage, Event, Listening, ProtocolError, Reply, Request, ServerMessage};
 use nabu_server::Server;
 use shared::Holds;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -26,6 +26,10 @@ const USAGE: &str = "Usage: nabu serve [--shared] [--data <folder>]\n\n  serve  
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
+    if nabu_server::chrome_host::is_host_call() {
+        nabu_server::chrome_host::serve_host();
+        return Ok(());
+    }
     if std::env::args().nth(1).as_deref() != Some("serve") {
         eprintln!("{USAGE}");
         std::process::exit(2);
@@ -40,6 +44,7 @@ async fn main() -> std::io::Result<()> {
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
+    nabu_server::chrome_host::announce(port, &app.token, &data);
 
     if shared {
         shared::announce(&data, port, &app.token)?;
@@ -56,6 +61,8 @@ async fn main() -> std::io::Result<()> {
         .route("/", get(connect))
         .route("/hold", get(hold))
         .route("/terminal", get(connect_terminal))
+        .route("/browser", get(connect_browser))
+        .route("/chrome", get(connect_chrome))
         .route("/file", get(send_file))
         .route("/upload", post(receive_file).layer(DefaultBodyLimit::disable()))
         .with_state(app);
@@ -76,6 +83,7 @@ async fn exit_with_parent() {
     let mut stdin = tokio::io::stdin();
     let mut buf = [0u8; 64];
     while matches!(stdin.read(&mut buf).await, Ok(n) if n > 0) {}
+    nabu_server::chrome_host::withdraw();
     std::process::exit(0);
 }
 
@@ -120,6 +128,31 @@ async fn connect_terminal(
         .and_then(|cursor| cursor.parse().ok())
         .unwrap_or(0);
     Ok(ws.on_upgrade(move |socket| nabu_server::terminal::stream(socket, terminal, cursor)))
+}
+
+async fn connect_browser(
+    ws: WebSocketUpgrade,
+    Query(query): Query<HashMap<String, String>>,
+    State(app): State<Arc<App>>,
+) -> Result<Response, StatusCode> {
+    if query.get("token") != Some(&app.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let id = query.get("id").cloned().unwrap_or_default();
+    Ok(ws.on_upgrade(move |socket| nabu_server::browser_panel::stream(socket, id)))
+}
+
+/// The NabuCode extension in the user's Chrome.
+async fn connect_chrome(
+    ws: WebSocketUpgrade,
+    Query(query): Query<HashMap<String, String>>,
+    State(app): State<Arc<App>>,
+) -> Result<Response, StatusCode> {
+    if query.get("token") != Some(&app.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let instance = query.get("chrome").cloned().unwrap_or_default();
+    Ok(ws.on_upgrade(move |socket| nabu_server::browser_panel::chrome_link(socket, instance)))
 }
 
 /// An attachment by link, so chats with pictures don't carry them inline; it never changes, so it is cached for good.
@@ -224,6 +257,8 @@ async fn serve_client(socket: WebSocket, app: Arc<App>) {
         }
     });
 
+    // Temporary sessions this connection made: they end with it
+    let temporary = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     while let Some(Ok(msg)) = stream.next().await {
         let Message::Text(text) = msg else { continue };
         let msg: ClientMessage = match serde_json::from_str(&text) {
@@ -239,10 +274,16 @@ async fn serve_client(socket: WebSocket, app: Arc<App>) {
                 continue;
             }
         };
-        let (app, tx) = (app.clone(), tx.clone());
+        let (app, tx, temporary) = (app.clone(), tx.clone(), temporary.clone());
+        let makes_temporary = matches!(msg.request, Request::SessionCreate { temporary: true, .. });
         tokio::spawn(async move {
             let reply = match app.server.handle(msg.request).await {
-                Ok(result) => ServerMessage::Reply { id: msg.id, result },
+                Ok(result) => {
+                    if let (true, Reply::Session(session)) = (makes_temporary, &result) {
+                        temporary.lock().unwrap().push(session.id.clone());
+                    }
+                    ServerMessage::Reply { id: msg.id, result }
+                }
                 Err(error) => ServerMessage::Error {
                     id: Some(msg.id),
                     error,
@@ -255,6 +296,10 @@ async fn serve_client(socket: WebSocket, app: Arc<App>) {
     forwarder.abort();
     drop(tx);
     let _ = writer.await;
+    let ended: Vec<String> = std::mem::take(&mut *temporary.lock().unwrap());
+    for session_id in ended {
+        let _ = app.server.handle(Request::SessionDelete { session_id }).await;
+    }
 }
 
 /// `--data <dir>`, else `NABUCODE_HOME`, else `~/.nabucode`.

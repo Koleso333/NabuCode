@@ -125,6 +125,7 @@ pub async fn email(net: &HyperTransport, token: &str) -> Option<String> {
             ("authorization".into(), format!("Bearer {token}")),
             ("anthropic-beta".into(), "oauth-2025-04-20".into()),
             ("accept".into(), "application/json".into()),
+            ("user-agent".into(), ncore_claudesub::USER_AGENT.into()),
         ],
         body: Default::default(),
     };

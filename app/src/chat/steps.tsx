@@ -9,11 +9,12 @@ import { changedFiles, Chevron, Collapse, diffTotal, isOpen, Output, Shimmer, to
 
 export type Item = { part: Part; message: Message };
 
-type StepKind = "read" | "search" | "edit" | "shell" | "other";
+type StepKind = "read" | "search" | "edit" | "shell" | "browser" | "other";
 
 const stepKinds: Record<string, StepKind> = {
   read: "read", list: "read", grep: "search", glob: "search", search: "search", fetch: "search",
   edit: "edit", write: "edit", bash: "shell", powershell: "shell", task: "shell",
+  browser_open: "browser", browser_state: "browser", browser_act: "browser", browser_read: "browser", browser_js: "browser", browser_logs: "browser", browser_tabs: "browser",
 };
 
 const kindOf = (part: ToolPart) => stepKinds[part.tool] ?? "other";
@@ -22,7 +23,7 @@ const failed = (part: ToolPart) => part.state.status === "error" && part.state.e
 
 // "Посмотрел 2 файла, искал 2 раза, изменил 1 файл, переподключался 3 раза"; edits count unique files
 function stepsPhrase(tools: ToolPart[], retries: number) {
-  const counts: Record<StepKind, number> = { read: 0, search: 0, edit: 0, shell: 0, other: 0 };
+  const counts: Record<StepKind, number> = { read: 0, search: 0, edit: 0, shell: 0, browser: 0, other: 0 };
   const edited = new Set<string>();
   for (const part of tools) {
     const kind = kindOf(part);

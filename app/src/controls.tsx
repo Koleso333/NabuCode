@@ -5,8 +5,8 @@ import { tr } from "./i18n";
 export function Glyph(props: { name: string; size?: number; color?: string }) {
   const size = () => props.size ?? 18;
   return props.name === "explorer"
-    ? <img class="glyph" src="/icons/explorer.svg" width={size()} height={size()} alt="" draggable={false} />
-    : <span class="glyph glyph-mask" style={{ width: `${size()}px`, height: `${size()}px`, color: props.color, "mask-image": `url('/icons/${props.name}.svg')`, "-webkit-mask-image": `url('/icons/${props.name}.svg')` }} aria-hidden="true" />;
+    ? <img class="glyph" src={`${import.meta.env.BASE_URL}icons/explorer.svg`} width={size()} height={size()} alt="" draggable={false} />
+    : <span class="glyph glyph-mask" style={{ width: `${size()}px`, height: `${size()}px`, color: props.color, "mask-image": `url('${import.meta.env.BASE_URL}icons/${props.name}.svg')`, "-webkit-mask-image": `url('${import.meta.env.BASE_URL}icons/${props.name}.svg')` }} aria-hidden="true" />;
 }
 
 export function Press(props: {
@@ -141,21 +141,30 @@ export function MenuItem(props: { icon: string; label: string; onClick: () => vo
   return <button type="button" role="menuitem" onClick={() => props.onClick()}><span class="context-menu-icon"><Glyph name={props.icon} size={16} /></span>{props.label}</button>;
 }
 
-export function ConfirmDialog(props: { title: string; description: string; action: string; onConfirm: () => void; onClose: () => void }) {
+// Closes on a click outside when onClose is given; a close button is drawn for onCloseButton
+export function Dialog(props: { title: string; role?: "dialog" | "alertdialog"; onClose?: () => void; onCloseButton?: () => void; children: JSX.Element }) {
   let card!: HTMLDivElement;
-  let confirm!: HTMLButtonElement;
   onMount(() => {
-    closeOnOutside(card, undefined, props.onClose);
-    confirm.focus();
+    if (props.onClose) closeOnOutside(card, undefined, props.onClose);
+    card.querySelector<HTMLElement>(".confirm-actions button:last-child")?.focus();
   });
   return <Portal><div class="dialog-backdrop">
-    <div ref={card} class="confirm-dialog panel-frame" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-description">
-      <h2 id="confirm-title">{props.title}</h2>
-      <p id="confirm-description">{props.description}</p>
-      <div class="confirm-actions">
-        <Press label={tr().common.cancel} class="confirm-button" onClick={props.onClose}>{tr().common.cancel}</Press>
-        <button ref={confirm} type="button" class="press confirm-button" data-variant="primary" onClick={() => { props.onConfirm(); props.onClose(); }}>{props.action}</button>
+    <div ref={card} class="confirm-dialog panel-frame" role={props.role ?? "dialog"} aria-modal="true" aria-label={props.title}>
+      <div class="dialog-head"><h2>{props.title}</h2>
+        <Show when={props.onCloseButton}>{close => <IconButton name="close" label={tr().common.close} size={14} width={22} onClick={close()} />}</Show>
       </div>
+      {props.children}
     </div>
   </div></Portal>;
+}
+
+export function ConfirmDialog(props: { title: string; description: string; action: string; cancel?: string; danger?: boolean; onConfirm: () => void; onClose: () => void }) {
+  const cancel = () => props.cancel ?? tr().common.cancel;
+  return <Dialog title={props.title} role="alertdialog" onClose={props.onClose}>
+    <p>{props.description}</p>
+    <div class="confirm-actions">
+      <Press label={cancel()} class="confirm-button" onClick={props.onClose}>{cancel()}</Press>
+      <button type="button" class="press confirm-button" data-variant={props.danger ? "danger" : "primary"} onClick={() => { props.onConfirm(); props.onClose(); }}>{props.action}</button>
+    </div>
+  </Dialog>;
 }

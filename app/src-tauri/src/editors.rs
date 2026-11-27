@@ -50,8 +50,20 @@ pub fn open_in_editor(file: String, editor: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn reveal_in_explorer(path: String) -> Result<(), String> {
+    let path = path.replace('/', "\\");
+    let mut explorer = Command::new("explorer.exe");
+    // A folder opens itself, a file opens its folder with it selected.
+    // Explorer reads only `/select,"path"`: the default quoting of the whole argument sends it elsewhere
+    let arg = if Path::new(&path).is_dir() { format!("\"{path}\"") } else { format!("/select,\"{path}\"") };
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        explorer.raw_arg(arg);
+    }
+    #[cfg(not(windows))]
+    explorer.arg(arg);
     // explorer.exe returns 1 even when it worked, so only a failed start is an error
-    Command::new("explorer.exe").arg(format!("/select,{}", path.replace('/', "\\"))).spawn().map(|_| ()).map_err(|error| error.to_string())
+    explorer.spawn().map(|_| ()).map_err(|error| error.to_string())
 }
 
 fn find() -> Vec<PathBuf> {

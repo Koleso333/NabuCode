@@ -44,7 +44,7 @@ function sessionChanges(messages: Message[]) {
 }
 
 export function FilePanel(props: {
-  directory: string; tab: FilesTab; onTab: (tab: FilesTab) => void; width: number; bottom: number;
+  directory: string; tab: FilesTab; onTab: (tab: FilesTab) => void; width: number; bottom: number; right: number;
   onWidth: (width: number) => void; messages?: Message[]; onExpand: (diff: OpenedDiff) => void;
 }) {
   const text = () => tr().files;
@@ -163,7 +163,7 @@ export function FilePanel(props: {
     </>;
   }
 
-  return <aside class="files-panel" style={{ width: `${props.width}px`, bottom: `${props.bottom}px` }}>
+  return <aside class="files-panel" classList={{ "beside-browser": props.right > 0 }} style={{ width: `${props.width}px`, bottom: `${props.bottom}px`, right: `${props.right}px` }}>
     <div class="files-panel-resize" onPointerDown={resize} />
     <div class="files-panel-head">
       <Press label={text().changes} class="file-tab" selected={props.tab === "changes"} onClick={() => props.onTab("changes")}>

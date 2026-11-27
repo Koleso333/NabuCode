@@ -4,7 +4,7 @@ import type { Mark } from "../marks";
 
 // Same shapes as the server protocol, so the timeline will not change when the server is plugged in
 export type ToolStatus = "pending" | "running" | "completed" | "error";
-export type ToolState = { status: ToolStatus; input: Record<string, any>; output?: string; error?: string; metadata?: Record<string, any> };
+export type ToolState = { status: ToolStatus; input: Record<string, any>; output?: string; images?: string[]; error?: string; metadata?: Record<string, any> };
 export type TextPart = { id: string; type: "text" | "reasoning"; text: string };
 export type ToolPart = { id: string; type: "tool"; tool: string; state: ToolState; callId?: string };
 /** Repeats of a failed request: `max` is absent when unlimited, `next` is when the next attempt goes. */

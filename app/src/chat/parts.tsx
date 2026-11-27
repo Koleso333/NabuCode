@@ -84,8 +84,34 @@ export function toolLabel(part: ToolPart): ToolLabel {
       return { title, subtitle: files.length > 1 ? tr().chat.files(files.length) : fileName(files[0]?.relativePath ?? input.path ?? "") };
     }
     case "agent": return { title: agentName(input.subagent_type), subtitle: input.description };
+    case "skill": return { title, subtitle: input.name };
+    case "browser_open": return { title, subtitle: input.url };
+    case "browser_state": case "browser_read": return { title, subtitle: browser().tab(input.tab), args: args(["find", input.find]) };
+    case "browser_act": return { title, subtitle: actsSubtitle(input.actions) };
+    case "browser_js": return { title, subtitle: typeof input.code === "string" ? input.code.trim().split("\n")[0] : "", mono: true };
+    case "browser_logs": return { title: input.kind === "network" ? tr().chat.tool.browser_network : title, subtitle: browser().tab(input.tab), args: args(["find", input.find]) };
+    case "browser_tabs": return { title, subtitle: Array.isArray(input.close) && input.close.length ? browser().closed(input.close.length) : "" };
     default: return { title };
   }
+}
+
+const browser = () => tr().chat.browser;
+
+// "клик [3] · ввод «привет» · клавиши Enter"
+function actsSubtitle(actions: unknown) {
+  if (!Array.isArray(actions)) return "";
+  const target = (value: unknown) => typeof value === "number" ? `[${value}]` : Array.isArray(value) ? `(${value.join(", ")})` : "";
+  const detail = (action: Record<string, any>) => {
+    switch (action.do) {
+      case "type": return typeof action.text === "string" ? `«${action.text}»` : "";
+      case "key": return typeof action.keys === "string" ? action.keys : "";
+      case "goto": return action.url ?? "";
+      case "viewport": return action.width && action.height ? `${action.width}×${action.height}` : action.width ?? "";
+      case "drag": return `${target(action.from)} → ${target(action.to)}`;
+      default: return target(action.target);
+    }
+  };
+  return actions.map(action => [browser()[action?.do] ?? action?.do, detail(action ?? {})].filter(Boolean).join(" ")).join(" · ");
 }
 
 export const agentName = (type: unknown) => typeof type === "string" && type ? `${tr().chat.tool.agent} ${type[0].toUpperCase()}${type.slice(1)}` : tr().chat.tool.agent;
@@ -126,12 +152,26 @@ function ReadPanel(props: { path: string; text: string }) {
     return numbers.length ? tr().chat.lines(numbers[0], numbers.at(-1)!) : "";
   };
   return <div class="file-panel">
-    <div class="file-head static">
-      <span class="file-path"><Show when={folderOf(props.path)}><span class="file-folder">{`‪${folderOf(props.path)}/‬`}</span></Show>{fileName(props.path)}</span>
-      <span class="file-change">{range()}</span>
-    </div>
+    <PathHead path={props.path} note={range()} />
     <CodeLines text={props.text} path={props.path} />
   </div>;
+}
+
+function PathHead(props: { path: string; note?: string }) {
+  return <div class="file-head static">
+    <span class="file-path"><Show when={folderOf(props.path)}><span class="file-folder">{`‪${folderOf(props.path)}/‬`}</span></Show>{fileName(props.path)}</span>
+    <Show when={props.note}><span class="file-change">{props.note}</span></Show>
+  </div>;
+}
+
+// What the skill tool gave the model: its folder above, its instructions below
+function SkillPanel(props: { output: string }) {
+  const parsed = () => props.output.match(/^<skill-content name="[^"]*" dir="([^"]*)">\n([\s\S]*?)\n<\/skill-content>$/);
+  const numbered = (text: string) => text.split("\n").map((line, index) => `${index + 1}\t${line}`).join("\n");
+  return <Show when={parsed()} fallback={<Output text={props.output} />}>{found => <div class="file-panel">
+    <PathHead path={found()[1]} />
+    <CodeLines text={numbered(found()[2])} path="SKILL.md" />
+  </div>}</Show>;
 }
 
 // The command in its own highlighted box, the output plain under it
@@ -183,8 +223,16 @@ export function toolBody(part: ToolPart): (() => JSX.Element) | undefined {
     case "bash": case "powershell":
       return () => <ShellOutput command={part.state.input.command ?? ""} output={output} lang={part.tool === "bash" ? "shellscript" : "powershell"} />;
     case "read": return output ? () => <ReadPanel path={part.state.input.path ?? ""} text={output} /> : undefined;
+    case "skill": return output ? () => <SkillPanel output={output} /> : undefined;
     case "search": return output ? () => <SearchResults text={output} /> : undefined;
     case "fetch": case "list": case "glob": case "grep": case "task": return output ? () => <Output text={output} /> : undefined;
+    case "browser_open": case "browser_state": case "browser_act": case "browser_read": case "browser_js": case "browser_logs": case "browser_tabs": {
+      const shots = part.state.images ?? [];
+      return output || shots.length ? () => <>
+        <Show when={output}><Output text={output} /></Show>
+        <For each={shots}>{shot => <img class="tool-shot" src={shot} alt="" draggable={false} />}</For>
+      </> : undefined;
+    }
     default: return undefined;
   }
 }

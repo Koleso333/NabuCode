@@ -95,17 +95,16 @@ pub async fn run(args: Value) -> Result<String, String> {
     } else {
         &page.lines
     };
-    let head = format!(
-        "{}\n{} ({} lines){}",
-        page.title,
-        page.url,
-        lines.len(),
-        page.note
-    );
+    show(&page.title, &page.url, lines, &page.note, &args)
+}
+
+/// The page's lines as `fetch` and `browser_read` show them: a part with the outline, or the lines `find` matches.
+pub(super) fn show(title: &str, url: &str, lines: &[String], note: &str, args: &Value) -> Result<String, String> {
+    let head = format!("{title}\n{url} ({} lines){note}", lines.len());
     if lines.iter().all(|l| l.trim().is_empty()) {
         return Ok(format!("{head}\nthe page has no text"));
     }
-    if let Some(pattern) = opt_str(&args, "find") {
+    if let Some(pattern) = opt_str(args, "find") {
         let found = find(lines, pattern)?;
         let outline = if found.starts_with("no lines match") {
             outline(lines)
@@ -114,8 +113,8 @@ pub async fn run(args: Value) -> Result<String, String> {
         };
         return Ok(format!("{head}\n{found}\n{outline}").trim_end().to_owned());
     }
-    let offset = num_arg(&args, "offset").unwrap_or(1).max(1);
-    let limit = num_arg(&args, "limit").unwrap_or(LINES).clamp(1, LINES_MAX);
+    let offset = num_arg(args, "offset").unwrap_or(1).max(1);
+    let limit = num_arg(args, "limit").unwrap_or(LINES).clamp(1, LINES_MAX);
     if offset > lines.len() {
         return Err(format!(
             "`offset` {offset} is past the end: the page has {} lines",
@@ -265,7 +264,7 @@ async fn download(url: &str, js: bool) -> Result<Page, String> {
     })
 }
 
-async fn convert(html: String, base: Url) -> Result<(String, String), String> {
+pub(super) async fn convert(html: String, base: Url) -> Result<(String, String), String> {
     tokio::task::spawn_blocking(move || markdown(&html, &base))
         .await
         .map_err(|e| format!("converting the page crashed: {e}"))
@@ -279,7 +278,7 @@ fn textual(kind: &str) -> bool {
             .any(|t| kind.contains(t))
 }
 
-fn split(text: &str) -> Vec<String> {
+pub(super) fn split(text: &str) -> Vec<String> {
     text.lines().map(|l| l.trim_end().to_owned()).collect()
 }
 

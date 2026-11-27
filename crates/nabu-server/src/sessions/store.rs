@@ -17,9 +17,12 @@ pub struct Doc {
     pub messages: Vec<MessageWithParts>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact: Option<super::compact::Checkpoint>,
-    /// The only tools a subagent may use; `None` means all.
+    /// The only tools the session may use; `None` means all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
+    /// The extension's id of the Chrome the session works in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chrome: Option<String>,
 }
 
 pub struct Store {
@@ -65,6 +68,9 @@ impl Store {
     }
 
     pub fn save_checked(&self, doc: &mut Doc) -> std::io::Result<()> {
+        if doc.session.temporary {
+            return Ok(());
+        }
         let path = self.path(&doc.session.id);
         std::fs::create_dir_all(&self.dir)?;
         self.keep_files(&doc.session.id, files(doc.messages.iter_mut().flat_map(|m| m.parts.iter_mut())))?;
@@ -91,17 +97,13 @@ impl Store {
     }
 
     pub fn remove(&self, id: &str) {
-        let removed =
-            std::fs::remove_file(self.path(id)).and_then(|_| {
-                match std::fs::remove_dir_all(self.attachments(id)) {
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                    other => other,
-                }
-            });
-        if let Err(e) = removed
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            eprintln!("[sessions] could not remove {id}: {e}");
+        // A temporary session has no file, but may have uploaded attachments
+        for removed in [std::fs::remove_file(self.path(id)), std::fs::remove_dir_all(self.attachments(id))] {
+            if let Err(e) = removed
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                eprintln!("[sessions] could not remove {id}: {e}");
+            }
         }
     }
 
@@ -303,6 +305,8 @@ mod tests {
                 },
                 parent_id: None,
                 compactions: Vec::new(),
+                no_project: false,
+                temporary: false,
             },
             messages: vec![
                 MessageWithParts {
@@ -338,6 +342,7 @@ mod tests {
                 },
             ],
             compact: None,
+            chrome: None,
             tools: None,
         };
         store.save(&mut doc);

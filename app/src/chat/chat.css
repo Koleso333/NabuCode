@@ -88,6 +88,8 @@
 .tool-dismissed { align-self: flex-end; color: var(--muted); font-size: 13px; font-weight: 400; }
 
 .tool-output { position: relative; border: 1px solid var(--outline); border-radius: 8px; background: var(--chrome); overflow: hidden; }
+.tool-shot { display: block; max-width: 100%; border: 1px solid var(--outline); border-radius: 8px; }
+.tool-output + .tool-shot, .tool-shot + .tool-shot { margin-top: 6px; }
 .tool-scroll { max-height: 240px; overflow-y: auto; scrollbar-width: none; }
 .tool-scroll::-webkit-scrollbar { display: none; }
 .tool-output pre { margin: 0; padding: 9px 12px; color: var(--text); font-family: var(--code-font); font-size: 13px; line-height: 20px; white-space: pre-wrap; overflow-wrap: anywhere; }

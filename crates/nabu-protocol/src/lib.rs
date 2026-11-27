@@ -145,8 +145,19 @@ pub enum Request {
     SessionRecent {
         limit: usize,
     },
+    /// An empty `directory` makes a session without a project, in a folder of its own.
+    /// A temporary session is never saved and ends when the connection that made it closes.
     SessionCreate {
+        #[serde(default)]
         directory: String,
+        #[serde(default)]
+        temporary: bool,
+        /// The only tools the session may use, by tool or group name (`["browser"]`); a group named here is loaded from the start.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tools: Option<Vec<String>>,
+        /// The NabuCode extension's id of the Chrome the session works in: its browser tools open tabs there by default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chrome: Option<String>,
     },
     SessionGet {
         #[serde(rename = "sessionID")]
@@ -170,11 +181,13 @@ pub enum Request {
     },
     /// Starts a turn, or queues the prompt while the session answers.
     SessionPrompt(Prompt),
-    /// Skills a session in `directory` can use, in the order the sources give them.
+    /// Skills found for a session in `directory`, turned off ones too, in the order the sources give them.
     Skills { directory: String },
     /// Where skills are looked for; the order says whose skill wins when names repeat.
     SkillSources,
     SetSkillSources { sources: Vec<SkillSource> },
+    /// Skills the agent doesn't get, by their file; another skill of the same name takes their place.
+    SetDisabledSkills { paths: Vec<String> },
     /// Commands the server runs from a message's command mark.
     Commands,
     /// Prompts waiting for the running turn, oldest first.
@@ -263,6 +276,35 @@ pub enum Request {
     TerminalList { directory: String },
     TerminalResize { id: String, cols: u16, rows: u16 },
     TerminalClose { id: String },
+    /// Browser tabs of the session's chat: its own, or its top session's for a subagent.
+    BrowserTabs {
+        #[serde(rename = "sessionID")]
+        session_id: String,
+    },
+    /// Opens a tab in the session's chat; frames and input then go through `/browser?id=` on the same port.
+    BrowserOpen {
+        #[serde(rename = "sessionID")]
+        session_id: String,
+        /// Nothing to open: an empty tab.
+        url: String,
+    },
+    /// `url` is what the user typed: text that is no address goes to `search`, an address with `%s` for the words.
+    BrowserGo {
+        id: String,
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        search: Option<String>,
+    },
+    /// `sites` clears cookies, site storage and history too; it closes every chat's tabs.
+    BrowserClear { sites: bool },
+    /// Whether the browser keeps a cache and site data: sites were opened since the last clearing.
+    BrowserStored,
+    /// The NabuCode extension for the user's Chrome: where it lies and whether it is connected.
+    ChromeExtension,
+    /// `step` -1 goes back, 1 forward.
+    BrowserHistory { id: String, step: i64 },
+    BrowserReload { id: String },
+    BrowserClose { id: String },
     /// The user's project folders in their order.
     ProjectList,
     /// A folder already in the list stays where it is.
@@ -327,6 +369,10 @@ pub enum Reply {
     Shells(Vec<Shell>),
     Terminal(TerminalInfo),
     Terminals(Vec<TerminalInfo>),
+    BrowserTabs(Vec<BrowserTab>),
+    BrowserTab(BrowserTab),
+    BrowserStored(BrowserStored),
+    ChromeExtension(ChromeExtension),
     Projects(Vec<Project>),
     Branches(Vec<String>),
     Files(Vec<FileEntry>),
@@ -442,6 +488,12 @@ pub enum Event {
         request_id: String,
     },
     TerminalExited { id: String },
+    /// A tab of the chat opened, closed, or changed its title, address, icon or loading.
+    BrowserTabsChanged {
+        #[serde(rename = "sessionID")]
+        session_id: String,
+        tabs: Vec<BrowserTab>,
+    },
     /// The list changed, or a project's branch did.
     ProjectsChanged { projects: Vec<Project> },
     /// Something changed on disk inside a watched folder; changes close together come as one.
@@ -463,6 +515,33 @@ pub struct TerminalInfo {
     pub id: String,
     /// The tab title number: the lowest free one in the project folder.
     pub number: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserStored {
+    pub cache: bool,
+    pub sites: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChromeExtension {
+    pub connected: bool,
+    pub version: Option<String>,
+    pub folder: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserTab {
+    /// The DevTools target id.
+    pub id: String,
+    /// The number the chat's model knows the tab by.
+    pub number: u32,
+    pub title: String,
+    pub url: String,
+    /// A `data:` URL of the site's icon.
+    pub favicon: Option<String>,
+    pub loading: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -532,6 +611,8 @@ pub enum SkillHarness {
 pub enum SkillScope {
     Project,
     Global,
+    /// Claude desktop's own skills in `~/.claude/skills/synced`, written for its tools.
+    Synced,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -544,7 +625,13 @@ pub struct SkillSource {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SkillInfo {
     pub name: String,
+    /// Without one in the header, the first line of the text.
     pub description: String,
+    /// The header has a description.
+    pub described: bool,
+    /// The start of the text, in one line.
+    pub preview: String,
+    pub enabled: bool,
     /// The SKILL.md, or the command file of an old Claude Code command.
     pub path: String,
     pub harness: SkillHarness,
@@ -733,6 +820,12 @@ pub struct Session {
     pub parent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub compactions: Vec<SessionCompaction>,
+    /// The session has no project: `directory` is its own folder, removed with it.
+    #[serde(rename = "noProject", default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_project: bool,
+    /// Never saved; ends when the connection that made it closes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub temporary: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -108,7 +108,11 @@ pub async fn reply(
 fn toolbox_of(sessions: &Arc<Sessions>, directory: &str, user: &UserMessage, jobs: Arc<Jobs>) -> (Toolbox, bool) {
     let (tools, subagent) = sessions.tools_of(&user.session_id);
     let loaded = loaded_tools(&sessions.messages(&user.session_id).unwrap_or_default());
-    let toolbox = Toolbox::new(Path::new(directory), jobs).limited(tools).loading(loaded).with_skills(sessions.skills(directory));
+    let toolbox = Toolbox::new(Path::new(directory), jobs)
+        .limited(tools)
+        .loading(loaded)
+        .with_skills(sessions.skills(directory))
+        .in_chat(sessions.chat_of(&user.session_id), sessions.chrome_of(&user.session_id));
     if subagent {
         return (toolbox, true);
     }
@@ -1202,6 +1206,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sessions_without_a_project_get_their_own_folder() {
+        let root = std::env::temp_dir().join(format!("nabu-no-project-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let (events, _received) = broadcast::channel(128);
+        let sessions = sessions_over(&root, Arc::new(RouterMock::default()), events).await;
+        let saved_file = |id: &str| root.join("sessions").join(format!("{id}.json")).exists();
+
+        let kept = sessions.create(String::new(), false, None, None).unwrap();
+        assert!(kept.no_project && !kept.temporary);
+        assert_eq!(std::path::Path::new(&kept.directory), root.join("chats").join(&kept.id));
+        assert!(std::path::Path::new(&kept.directory).is_dir() && saved_file(&kept.id));
+        assert!(sessions.recent(10).iter().any(|s| s.id == kept.id));
+
+        let temporary = sessions.create(String::new(), true, None, None).unwrap();
+        assert!(temporary.no_project && temporary.temporary);
+        assert!(std::path::Path::new(&temporary.directory).starts_with(std::env::temp_dir()));
+        assert!(std::path::Path::new(&temporary.directory).is_dir() && !saved_file(&temporary.id));
+        assert!(!sessions.recent(10).iter().any(|s| s.id == temporary.id));
+        assert!(sessions.archive(&temporary.id).is_err());
+
+        let in_project = sessions.create(root.to_string_lossy().into_owned(), true, None, None).unwrap();
+        assert!(!in_project.no_project && !saved_file(&in_project.id));
+
+        for session in [&kept, &temporary, &in_project] {
+            sessions.delete(&session.id).unwrap();
+        }
+        assert!(!std::path::Path::new(&kept.directory).exists() && !saved_file(&kept.id));
+        assert!(!std::path::Path::new(&temporary.directory).exists());
+        assert!(root.is_dir(), "a project's folder stays");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
     async fn agentrouter_recovers_from_throttling_and_azure_history_rejection() {
         let mut random = [0; 8];
         getrandom::fill(&mut random).unwrap();
@@ -1214,7 +1251,7 @@ mod tests {
         let (events, mut received) = broadcast::channel(128);
         let mock = Arc::new(RouterMock::default());
         let sessions = sessions_over(&root, mock.clone(), events).await;
-        let session = sessions.create(root.to_string_lossy().into_owned());
+        let session = sessions.create(root.to_string_lossy().into_owned(), false, None, None).unwrap();
         let mut prompt = Prompt {
             session_id: session.id.clone(),
             message_id: id::ascending("msg"),
@@ -1407,7 +1444,7 @@ mod tests {
         let (events, mut received) = broadcast::channel(256);
         let mock = Arc::new(QueueMock::default());
         let sessions = sessions_over(&root, mock.clone(), events).await;
-        let session = sessions.create(root.to_string_lossy().into_owned());
+        let session = sessions.create(root.to_string_lossy().into_owned(), false, None, None).unwrap();
         let prompt = |text: &str| Prompt {
             session_id: session.id.clone(),
             message_id: id::ascending("msg"),
@@ -1504,7 +1541,7 @@ mod tests {
         let (events, mut received) = broadcast::channel(256);
         let mock = Arc::new(CompactMock::default());
         let sessions = sessions_over(&root, mock.clone(), events).await;
-        let session = sessions.create(root.to_string_lossy().into_owned());
+        let session = sessions.create(root.to_string_lossy().into_owned(), false, None, None).unwrap();
         let prompt = |parts: Vec<PromptPart>| Prompt {
             session_id: session.id.clone(),
             message_id: id::ascending("msg"),
@@ -1563,7 +1600,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let (events, _received) = broadcast::channel(64);
         let sessions = sessions_over(&root, Arc::new(CutMock::default()), events).await;
-        let session = sessions.create(root.to_string_lossy().into_owned());
+        let session = sessions.create(root.to_string_lossy().into_owned(), false, None, None).unwrap();
         let user = UserMessage {
             id: id::ascending("msg"),
             session_id: session.id.clone(),
@@ -1596,7 +1633,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let (events, _received) = broadcast::channel(64);
         let sessions = sessions_over(&root, Arc::new(CutMock::default()), events).await;
-        let session = sessions.create(root.to_string_lossy().into_owned());
+        let session = sessions.create(root.to_string_lossy().into_owned(), false, None, None).unwrap();
         assert!(sessions.context_parts(&session.id).is_err(), "no message, so no model to ask for");
         let user = UserMessage {
             id: id::ascending("msg"),
@@ -1627,7 +1664,7 @@ mod tests {
         std::fs::write(skill.join("SKILL.md"), "---\nname: review\ndescription: Reviews the diff\n---\nLook for bugs.").unwrap();
         let (events, _received) = broadcast::channel(64);
         let sessions = sessions_over(&root, Arc::new(CutMock::default()), events).await;
-        let session = sessions.create(root.to_string_lossy().into_owned());
+        let session = sessions.create(root.to_string_lossy().into_owned(), false, None, None).unwrap();
         let text = |text: &str| PromptPart::Text { id: id::ascending("prt"), text: text.into() };
         let mark = |name: &str| PromptPart::Skill { id: id::ascending("prt"), name: name.into(), at: false };
         let command = PromptPart::Command { id: id::ascending("prt"), name: "compact".into() };
@@ -1709,7 +1746,7 @@ mod tests {
         let (events, mut received) = broadcast::channel(256);
         let mock = Arc::new(CutMock::default());
         let sessions = sessions_over(&root, mock.clone(), events).await;
-        let session = sessions.create(root.to_string_lossy().into_owned());
+        let session = sessions.create(root.to_string_lossy().into_owned(), false, None, None).unwrap();
         let prompt = |text: &str| Prompt {
             session_id: session.id.clone(),
             message_id: id::ascending("msg"),
@@ -1764,13 +1801,13 @@ mod tests {
         let (events, _received) = broadcast::channel(256);
         let sessions = sessions_over(&root, Arc::new(CutMock::default()), events).await;
         let title = |id: &str| sessions.get(id).unwrap().title;
-        let named = sessions.create(root.to_string_lossy().into_owned());
+        let named = sessions.create(root.to_string_lossy().into_owned(), false, None, None).unwrap();
         sessions.rename(&named.id, "  Logs ".into()).unwrap();
         assert_eq!(title(&named.id), "Logs");
         sessions.rename(&named.id, "   ".into()).unwrap();
         assert_eq!(title(&named.id), super::super::UNTITLED);
 
-        let session = sessions.create(root.to_string_lossy().into_owned());
+        let session = sessions.create(root.to_string_lossy().into_owned(), false, None, None).unwrap();
         assert_eq!(session.title, super::super::UNTITLED);
         let prompt = Prompt {
             session_id: session.id.clone(),
@@ -1791,7 +1828,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let (events, _received) = broadcast::channel(256);
         let sessions = sessions_over(&root, Arc::new(CutMock::default()), events).await;
-        let session = sessions.create(root.to_string_lossy().into_owned());
+        let session = sessions.create(root.to_string_lossy().into_owned(), false, None, None).unwrap();
         tokio::time::sleep(Duration::from_millis(5)).await;
         sessions.rename(&session.id, "Logs".into()).unwrap();
         assert_eq!(sessions.get(&session.id).unwrap().time.updated, session.time.updated);
@@ -1804,7 +1841,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let (events, _received) = broadcast::channel(256);
         let sessions = sessions_over(&root, Arc::new(CutMock::default()), events.clone()).await;
-        let chat = sessions.create(root.to_string_lossy().into_owned());
+        let chat = sessions.create(root.to_string_lossy().into_owned(), false, None, None).unwrap();
         let prompt = Prompt {
             session_id: chat.id.clone(),
             message_id: id::ascending("msg"),
@@ -1840,7 +1877,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let (events, _received) = broadcast::channel(256);
         let sessions = sessions_over(&root, Arc::new(CutMock::default()), events.clone()).await;
-        let chat = sessions.create(root.to_string_lossy().into_owned());
+        let chat = sessions.create(root.to_string_lossy().into_owned(), false, None, None).unwrap();
         sessions.edit(&chat.id, |s| s.time.archived = Some(1)).unwrap();
         let sessions = sessions_over(&root, Arc::new(CutMock::default()), events).await;
         assert_eq!(sessions.get(&chat.id).unwrap().time.archived, None);
@@ -1970,7 +2007,7 @@ mod tests {
         ));
         let server = crate::Server::new(&root);
         let sessions = &server.sessions;
-        let session = sessions.create(root.to_string_lossy().into_owned());
+        let session = sessions.create(root.to_string_lossy().into_owned(), false, None, None).unwrap();
         let model = ModelRef {
             provider_id: "deepai-account".into(),
             model_id: "glm-5.3-flash".into(),

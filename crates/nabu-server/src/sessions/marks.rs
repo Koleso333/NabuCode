@@ -53,9 +53,19 @@ impl Sessions {
         Ok(())
     }
 
+    pub fn set_disabled_skills(&self, paths: Vec<String>) {
+        self.state.lock().unwrap().disabled_skills = paths;
+    }
+
     /// Skills a session in `directory` can use.
     pub fn skills(&self, directory: &str) -> Vec<Skill> {
-        skills::find(&self.skill_sources(), std::path::Path::new(directory))
+        self.found_skills(directory).into_iter().filter(|s| s.enabled).collect()
+    }
+
+    /// Skills for `directory`, the turned off ones too.
+    pub fn found_skills(&self, directory: &str) -> Vec<Skill> {
+        let disabled = self.state.lock().unwrap().disabled_skills.clone();
+        skills::find(&self.skill_sources(), std::path::Path::new(directory), &disabled)
     }
 
     /// Sends the message; one with a command runs it first, the rest of the message waits for it in the queue.

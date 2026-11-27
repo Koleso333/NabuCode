@@ -3,10 +3,12 @@
 
 mod api;
 pub mod credentials;
+mod identity;
 pub mod oauth;
 pub mod quota;
 pub mod request;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -17,10 +19,12 @@ use ncore::{
     Endpoint, Error, Format, Hook, HttpRequest, HttpResponse, Interests, Middleware, Next,
     RequestCtx, Transport,
 };
+use ncore::core::json::{self, Patch};
 use serde::de::DeserializeOwned;
 
 use api::{API_BASE, CallError, Sender, fail};
 pub use credentials::{CredentialStore, Credentials, MemoryStore};
+pub use identity::USER_AGENT;
 pub use quota::{HeaderLimits, Profile, Snapshot, Usage};
 
 #[derive(Debug, Clone)]
@@ -55,7 +59,12 @@ pub struct ClaudeSub {
     usage_cache: AsyncMutex<quota::Cache<Usage>>,
     profile_cache: AsyncMutex<quota::Cache<Profile>>,
     header_limits: Mutex<Option<HeaderLimits>>,
+    uuid_tried: AtomicBool,
+    fallback_session: String,
 }
+
+/// The host passes its chat id here; it becomes Claude Code's session id.
+pub const SESSION_HEADER: &str = "x-claude-code-session-id";
 
 impl ClaudeSub {
     pub fn new(store: Arc<dyn CredentialStore>) -> Self {
@@ -70,6 +79,8 @@ impl ClaudeSub {
             usage_cache: AsyncMutex::default(),
             profile_cache: AsyncMutex::default(),
             header_limits: Mutex::default(),
+            uuid_tried: AtomicBool::new(false),
+            fallback_session: identity::session_uuid(&api::random_id()),
         }
     }
 
@@ -88,7 +99,7 @@ impl ClaudeSub {
         self.header_limits.lock().unwrap().clone()
     }
 
-    async fn token(&self, sender: Sender<'_>, rejected: Option<&str>) -> Result<String, Error> {
+    async fn token(&self, sender: Sender<'_>, rejected: Option<&str>) -> Result<Credentials, Error> {
         let mut state = self.refresh.lock().await;
         if let Some(pending) = state.pending.clone() {
             self.store
@@ -103,7 +114,7 @@ impl ClaudeSub {
             .await
             .map_err(|_| fail("could not load account credentials"))?;
         if current.valid() && rejected != Some(current.access_token.as_str()) {
-            return Ok(current.access_token);
+            return self.fill_account(sender, current).await;
         }
         if let Some((token, until, message)) = &state.failure
             && token == &current.access_token
@@ -129,7 +140,31 @@ impl ClaudeSub {
             .await
             .map_err(|_| fail("could not persist refreshed credentials"))?;
         state.pending = None;
-        Ok(fresh.access_token)
+        self.fill_account(sender, fresh).await
+    }
+
+    /// Accounts connected before the uuid was kept get it once from the profile.
+    /// Runs under the refresh lock, so the save cannot overwrite a rotated token.
+    async fn fill_account(&self, sender: Sender<'_>, mut creds: Credentials) -> Result<Credentials, Error> {
+        if creds.account_uuid.is_some() || self.uuid_tried.swap(true, Ordering::Relaxed) {
+            return Ok(creds);
+        }
+        let req = HttpRequest {
+            method: "GET".into(),
+            url: format!("{API_BASE}/api/oauth/profile"),
+            headers: api::headers(&creds.access_token, true),
+            body: Bytes::new(),
+        };
+        let Ok(resp) = sender.send(req).await else { return Ok(creds) };
+        let Ok(profile) = api::json_response(resp, "profile").await else { return Ok(creds) };
+        if let Some(uuid) = profile["account"]["uuid"].as_str().filter(|s| !s.is_empty()) {
+            creds.account_uuid = Some(uuid.into());
+            self.store
+                .save(&creds)
+                .await
+                .map_err(|_| fail("could not persist account id"))?;
+        }
+        Ok(creds)
     }
 
     fn observe_limits(&self, response: &HttpResponse) {
@@ -139,8 +174,9 @@ impl ClaudeSub {
 
     async fn send(&self, mut req: HttpRequest, next: Next<'_>) -> Result<HttpResponse, Error> {
         validate_target(&req)?;
-        let token = self.token(Sender::Next(next), None).await?;
-        authenticate(&mut req, &token);
+        let session = take_session(&mut req).unwrap_or_else(|| self.fallback_session.clone());
+        let creds = self.token(Sender::Next(next), None).await?;
+        authenticate(&mut req, &creds, &session)?;
         let resp = next.run(req.clone()).await?;
         self.observe_limits(&resp);
         if resp.status != 401 {
@@ -148,8 +184,8 @@ impl ClaudeSub {
         }
         // One refresh/replay only, before any response body or SSE event is exposed.
         drop(resp);
-        let fresh = self.token(Sender::Next(next), Some(&token)).await?;
-        authenticate(&mut req, &fresh);
+        let fresh = self.token(Sender::Next(next), Some(&creds.access_token)).await?;
+        authenticate(&mut req, &fresh, &session)?;
         let resp = next.run(req).await?;
         self.observe_limits(&resp);
         Ok(resp)
@@ -161,7 +197,7 @@ impl ClaudeSub {
         path: &str,
     ) -> Result<serde_json::Value, CallError> {
         let sender = Sender::Transport(transport);
-        let token = self.token(sender, None).await?;
+        let token = self.token(sender, None).await?.access_token;
         let mut req = HttpRequest {
             method: "GET".into(),
             url: format!("{API_BASE}{path}"),
@@ -171,7 +207,7 @@ impl ClaudeSub {
         let mut resp = sender.send(req.clone()).await?;
         if resp.status == 401 {
             drop(resp);
-            let fresh = self.token(sender, Some(&token)).await?;
+            let fresh = self.token(sender, Some(&token)).await?.access_token;
             req.headers = api::headers(&fresh, true);
             resp = sender.send(req).await?;
         }
@@ -238,25 +274,55 @@ fn validate_target(req: &HttpRequest) -> Result<(), Error> {
     }
 }
 
-fn authenticate(req: &mut HttpRequest, token: &str) {
-    req.headers.retain(|(k, _)| {
-        ![
-            "authorization",
-            "x-api-key",
-            "x-goog-api-key",
-            "user-agent",
-            "content-length",
-            "host",
-            "cookie",
-            "proxy-authorization",
-        ]
+fn take_session(req: &mut HttpRequest) -> Option<String> {
+    let chat = req
+        .headers
         .iter()
-        .any(|s| k.eq_ignore_ascii_case(s))
+        .find(|(k, _)| k.eq_ignore_ascii_case(SESSION_HEADER))
+        .map(|(_, v)| v.trim().to_owned())
+        .filter(|v| !v.is_empty())?;
+    req.headers.retain(|(k, _)| !k.eq_ignore_ascii_case(SESSION_HEADER));
+    Some(identity::session_uuid(&chat))
+}
+
+/// Dresses the request as Claude Code 2.1.322 talking through this account.
+fn authenticate(req: &mut HttpRequest, creds: &Credentials, session: &str) -> Result<(), Error> {
+    let caller_betas: Vec<String> = req
+        .headers
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("anthropic-beta"))
+        .flat_map(|(_, v)| v.split(',').map(|b| b.trim().to_owned()).collect::<Vec<_>>())
+        .filter(|b| !b.is_empty() && !identity::BETAS.split(',').any(|known| known == b))
+        .collect();
+    req.headers.retain(|(k, _)| {
+        let k = k.to_ascii_lowercase();
+        !k.starts_with("x-stainless-")
+            && ![
+                "authorization",
+                "x-api-key",
+                "x-goog-api-key",
+                "user-agent",
+                "content-length",
+                "host",
+                "cookie",
+                "proxy-authorization",
+                "anthropic-beta",
+                "x-app",
+                "anthropic-dangerous-direct-browser-access",
+                SESSION_HEADER,
+            ]
+            .contains(&k.as_str())
     });
-    req.headers
-        .push(("authorization".into(), format!("Bearer {token}")));
-    req.headers
-        .push(("user-agent".into(), api::USER_AGENT.into()));
+    let betas = std::iter::once(identity::BETAS.to_owned()).chain(caller_betas).collect::<Vec<_>>().join(",");
+    let account = creds.account_uuid.as_deref().unwrap_or_default();
+    let machine = identity::Machine::for_account(account);
+    req.headers.extend(machine.headers());
+    req.headers.extend([
+        ("authorization".into(), format!("Bearer {}", creds.access_token)),
+        ("user-agent".into(), identity::USER_AGENT.into()),
+        ("anthropic-beta".into(), betas),
+        (SESSION_HEADER.into(), session.to_owned()),
+    ]);
     if !req
         .headers
         .iter()
@@ -265,6 +331,17 @@ fn authenticate(req: &mut HttpRequest, token: &str) {
         req.headers
             .push(("anthropic-version".into(), "2023-06-01".into()));
     }
+    if req.method == "POST" {
+        if !req.url.contains("beta=true") {
+            req.url.push_str(if req.url.contains('?') { "&beta=true" } else { "?beta=true" });
+        }
+        if req.url.split('?').next().is_some_and(|path| path.ends_with("/v1/messages")) {
+            let metadata = serde_json::json!({"user_id": machine.user_id(account, session)});
+            let patch = Patch::set("/metadata", metadata).map_err(|e| fail(e.to_string()))?;
+            req.body = json::apply(&req.body, &[patch]).map(Bytes::from).map_err(|e| fail(e.to_string()))?;
+        }
+    }
+    Ok(())
 }
 
 impl Hook for ClaudeSub {

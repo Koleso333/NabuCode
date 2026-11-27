@@ -394,6 +394,9 @@ impl ClaudeAccounts {
         let mut options = GenerateOptions::default();
         options.encode.default_max_tokens =
             known.map(|m| m.output).filter(|n| *n > 0).or(Some(32_000));
+        options
+            .headers
+            .push((ncore_claudesub::SESSION_HEADER.into(), session.to_owned()));
         let effort = model
             .variant
             .clone()

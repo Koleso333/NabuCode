@@ -70,6 +70,7 @@ impl Holds {
 pub async fn exit_when_unheld(holds: Holds, data: std::path::PathBuf) {
     holds.wait_unheld().await;
     let _ = std::fs::remove_file(data.join("server.json"));
+    nabu_server::chrome_host::withdraw();
     std::process::exit(0);
 }
 

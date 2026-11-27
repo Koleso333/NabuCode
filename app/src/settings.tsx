@@ -8,21 +8,27 @@ import { Selector } from "./selector";
 import { isHidden, serverModels } from "./catalog";
 import { effortFor, keyOf } from "./composer-model";
 import { demoMode } from "./chat/actions";
-import { preferences, setPreference, type EffortPickerKind, type MarkStyle, type Preferences } from "./preferences";
+import { preferences, setPreference, type EffortPickerKind, type MarkStyle, type Preferences, type SearchEngine } from "./preferences";
 import { catalog, catalogFailed, fontChoices, isDownloading, loadCatalog, previewFont, previewStack, type FontKind } from "./fonts";
-import { closeOnOutside, fitScroll, Glyph, Press, Ring, SearchField, SidebarRow } from "./controls";
+import { closeOnOutside, ConfirmDialog, fitScroll, Glyph, Press, Ring, SearchField, SidebarRow } from "./controls";
+import { searchEngines } from "./browsers";
+import { request } from "./server";
+import { showFailure } from "./errors";
 import { Button, Empty, FilterField, Page, Row, Section, TextBox, TextRow, ToggleRow } from "./settings-parts";
 import { ModelsPage, ProvidersPage } from "./settings-providers";
+import { SkillsPage } from "./settings-skills";
 import { shells } from "./terminals";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { describeEditor, findEditors, type Editor } from "./files";
+import { describeEditor, findEditors, revealInExplorer, type Editor } from "./files";
+import { copyText } from "./chat/copy";
+import { channelName, checkUpdates, foundUpdate, installUpdate, releaseName, setUpdateChannel, updateChannel, updateChannels, updatesSupported, type UpdateChannel } from "./updates";
 
-export type SettingsTab = "general" | "personalization" | "shortcuts" | "compaction" | "providers" | "models";
+export type SettingsTab = "general" | "personalization" | "shortcuts" | "compaction" | "skills" | "browser" | "providers" | "models";
 
 const tabs: { group?: keyof Dictionary["settings"]["groups"]; items: { id: SettingsTab; icon: string }[] }[] = [
   { items: [{ id: "general", icon: "sliders" }, { id: "personalization", icon: "brush" }, { id: "shortcuts", icon: "keyboard" }] },
-  { group: "agent", items: [{ id: "compaction", icon: "sliders" }] },
+  { group: "agent", items: [{ id: "compaction", icon: "sliders" }, { id: "skills", icon: "bolt" }, { id: "browser", icon: "globe" }] },
   { group: "server", items: [{ id: "providers", icon: "providers" }, { id: "models", icon: "models" }] },
 ];
 
@@ -44,12 +50,14 @@ export function SettingsNav(props: { tab: SettingsTab; onTab: (tab: SettingsTab)
   </div>;
 }
 
-export function SettingsPanel(props: { tab: SettingsTab }) {
+export function SettingsPanel(props: { tab: SettingsTab; directory: string }) {
   return <div class="settings-panel">
     <Show when={props.tab === "general"}><GeneralPage /></Show>
     <Show when={props.tab === "personalization"}><PersonalizationPage /></Show>
     <Show when={props.tab === "shortcuts"}><ShortcutsPage /></Show>
     <Show when={props.tab === "compaction"}><CompactionPage /></Show>
+    <Show when={props.tab === "skills"}><SkillsPage directory={props.directory} /></Show>
+    <Show when={props.tab === "browser"}><BrowserPage /></Show>
     <Show when={props.tab === "providers"}><ProvidersPage /></Show>
     <Show when={props.tab === "models"}><ModelsPage /></Show>
   </div>;
@@ -74,7 +82,7 @@ const menuStyle = (position: MenuPosition) => ({
 });
 
 function Choice<T extends string>(props: {
-  options: T[]; value: T; label: string; name?: (value: T) => string;
+  options: T[]; value: T; label: string; name?: (value: T) => string; icon?: (value: T) => string;
   onChange?: (value: T) => void; onPreview?: (value: T) => void; onPreviewEnd?: () => void;
 }) {
   const name = (value: T) => props.name ? props.name(value) : value;
@@ -91,15 +99,16 @@ function Choice<T extends string>(props: {
   return <>
     <button ref={trigger} type="button" class="choice" classList={{ open: !!menu() }} aria-label={props.label}
       onClick={() => menu() ? setMenu(null) : open()}>
+      <Show when={props.icon}>{icon => <span class="editor-icon"><Glyph name={icon()(props.value)} size={16} /></span>}</Show>
       <span class="truncate">{name(props.value)}</span><Glyph name="chevron-down" size={13} />
     </button>
-    <Show when={menu()}>{position => <ChoiceMenu position={position()} options={props.options} value={props.value} name={name} onPick={pick} onClose={() => setMenu(null)}
+    <Show when={menu()}>{position => <ChoiceMenu position={position()} options={props.options} value={props.value} name={name} icon={props.icon} onPick={pick} onClose={() => setMenu(null)}
       onPreview={props.onPreview} onPreviewEnd={props.onPreviewEnd} trigger={trigger} />}</Show>
   </>;
 }
 
 function ChoiceMenu<T extends string>(props: {
-  position: MenuPosition; options: T[]; value: T; name: (value: T) => string;
+  position: MenuPosition; options: T[]; value: T; name: (value: T) => string; icon?: (value: T) => string;
   onPick: (value: T) => void; onClose: () => void; onPreview?: (value: T) => void; onPreviewEnd?: () => void; trigger: HTMLElement;
 }) {
   let list!: HTMLDivElement;
@@ -110,8 +119,9 @@ function ChoiceMenu<T extends string>(props: {
   });
   return <Portal><div ref={list} class="choice-menu panel-frame" role="listbox" onPointerLeave={() => props.onPreviewEnd?.()} style={menuStyle(props.position)}>
     <For each={props.options}>{option =>
-      <Press label={props.name(option)} class="choice-option" selected={option === props.value} onClick={() => props.onPick(option)}
-        onPointerEnter={() => props.onPreview?.(option)}>
+      <Press label={props.name(option)} class={props.icon ? "choice-option editor-option" : "choice-option"} selected={option === props.value}
+        onClick={() => props.onPick(option)} onPointerEnter={() => props.onPreview?.(option)}>
+        <Show when={props.icon}>{icon => <span class="editor-icon"><Glyph name={icon()(option)} size={16} /></span>}</Show>
         <span class="truncate">{props.name(option)}</span><Show when={option === props.value}><Glyph name="check-small" size={15} /></Show>
       </Press>}</For>
   </div></Portal>;
@@ -226,9 +236,43 @@ function EditorPicker(props: { label: string }) {
 // Without a server there is only the default shell
 const shellIds = () => shells().length ? shells().map(shell => shell.id) : [""];
 
+function UpdateCard() {
+  return <Show when={updatesSupported() && foundUpdate()}>{update => <Section>
+    <div class="settings-row update-card">
+      <img src="/logo.png" alt="" />
+      <div class="settings-row-text"><span class="settings-row-title">{tr().settings.general.available}</span>
+        <span class="settings-row-description">NabuCode {releaseName(update())}</span></div>
+      <div class="settings-row-control">
+        <button type="button" class="press confirm-button" data-variant="primary" onClick={() => void installUpdate()}>{tr().updates.install}</button>
+      </div>
+    </div>
+  </Section>}</Show>;
+}
+
+function UpdatesSection() {
+  const text = () => tr().settings.general;
+  const [checking, setChecking] = createSignal<"idle" | "checking" | "none">("idle");
+  async function check() {
+    setChecking("checking");
+    const next = await checkUpdates().catch(error => { showFailure(error); return undefined; });
+    setChecking(next === null ? "none" : "idle");
+    if (next === null) setTimeout(() => setChecking("idle"), 2000);
+  }
+  const label = () => checking() === "checking" ? text().checking : checking() === "none" ? text().upToDate : text().checkNow;
+  return <Section title={text().updates} note={"__TAURI_INTERNALS__" in window && !updatesSupported() ? text().portable : undefined}>
+    <ToggleRow text={text().checkOnStartup} on={preferences.checkOnStartup} onChange={on => setPreference("checkOnStartup", on)} />
+    <ToggleRow text={text().releaseNotes} on={preferences.releaseNotes} onChange={on => setPreference("releaseNotes", on)} />
+    <TextRow text={text().checkUpdates}><Button label={label()} disabled={!updatesSupported() || checking() !== "idle"} onClick={() => void check()} /></TextRow>
+    <TextRow text={text().channel}>
+      <Choice<UpdateChannel> label={text().channel.title} options={updateChannels} value={updateChannel()} name={channelName} onChange={setUpdateChannel} />
+    </TextRow>
+  </Section>;
+}
+
 function GeneralPage() {
   const text = () => tr().settings.general;
   return <Page title={tr().settings.tabs.general}>
+    <UpdateCard />
     <Section>
       <TextRow text={text().language}>
         <Choice<Language> label={text().language.title} options={["ru", "en"]} value={language()} name={id => languageNames[id]} onChange={setLanguage} />
@@ -244,11 +288,7 @@ function GeneralPage() {
         name={id => shells().find(shell => shell.id === id)?.name ?? "PowerShell"} onChange={shell => setPreference("shell", shell)} /></TextRow>
       <ToggleRow text={text().syntax} on={preferences.syntax} onChange={on => setPreference("syntax", on)} />
     </Section>
-    <Section title={text().updates}>
-      <ToggleRow text={text().checkOnStartup} on={preferences.checkOnStartup} onChange={on => setPreference("checkOnStartup", on)} />
-      <ToggleRow text={text().releaseNotes} on={preferences.releaseNotes} onChange={on => setPreference("releaseNotes", on)} />
-      <TextRow text={text().checkUpdates}><Button label={text().checkNow} disabled /></TextRow>
-    </Section>
+    <UpdatesSection />
   </Page>;
 }
 
@@ -384,6 +424,63 @@ function CompactionEffort(props: { model: Model }) {
       <EffortPicker levels={props.model.efforts} value={level()} onPick={next => setPreference("compaction", "effort", next)} onClose={() => setBox(null)} />
     </div></Portal>}</Show>
   </>;
+}
+
+function BrowserPage() {
+  const text = () => tr().settings.browser;
+  const [confirming, setConfirming] = createSignal(false);
+  // The agent may open sites while the page is shown
+  const [stored, { refetch }] = createResource(() => request("browserStored").catch(() => ({ cache: false, sites: false })));
+  const timer = setInterval(() => void refetch(), 3000);
+  onCleanup(() => clearInterval(timer));
+  const clear = (sites: boolean) => void request("browserClear", { sites }).then(() => refetch(), showFailure);
+  return <Page title={tr().settings.tabs.browser}>
+    <Section title={text().builtIn}>
+      <TextRow text={text().search}>
+        <Choice<SearchEngine> label={text().search.title} options={Object.keys(searchEngines) as SearchEngine[]} value={preferences.searchEngine}
+          name={id => searchEngines[id].name} icon={id => `engines/${id}`} onChange={id => setPreference("searchEngine", id)} />
+      </TextRow>
+      <TextRow text={text().cache}><Button label={text().clear} disabled={!stored.latest?.cache} onClick={() => clear(false)} /></TextRow>
+      <TextRow text={text().sites}><Button label={text().clear} disabled={!stored.latest?.sites} onClick={() => setConfirming(true)} /></TextRow>
+    </Section>
+    <ChromeExtensionSection />
+    <Show when={confirming()}><ConfirmDialog title={text().sitesConfirm.title} description={text().sitesConfirm.description} action={text().clear}
+      onConfirm={() => clear(true)} onClose={() => setConfirming(false)} /></Show>
+  </Page>;
+}
+
+const extensionsPage = "chrome://extensions";
+const demoExtension = { connected: false, version: null, folder: "C:\\Users\\user\\AppData\\Local\\NabuCode\\chrome\\extension" };
+
+// Chrome opens no chrome:// address given from outside, so the user pastes it
+function ChromeExtensionSection() {
+  const text = () => tr().settings.browser.extension;
+  const [state, { refetch }] = createResource(() => demoMode ? demoExtension : request("chromeExtension").catch(() => undefined));
+  const timer = setInterval(() => void refetch(), 3000);
+  onCleanup(() => clearInterval(timer));
+  const [copied, setCopied] = createSignal(false);
+  const copy = () => void copyText(extensionsPage).then(done => { setCopied(done); setTimeout(() => setCopied(false), 1500); });
+  const folder = () => state.latest?.folder ?? "";
+  const openFolder = () => void revealInExplorer(folder()).catch(showFailure);
+  const step = (number: number, title: string) => <><span class="chrome-step-number">{number}</span>{title}</>;
+  const name = () => <>{text().name}<span class="chrome-status"><span class={`chrome-dot ${state.latest?.connected ? "on" : ""}`} />
+    {state.latest?.connected ? text().connected : text().disconnected}</span></>;
+  return <Show when={state.latest}>
+    <Section title={text().title}>
+      <Show when={state.latest?.connected} fallback={<>
+        <Row title={name()} description={text().about} />
+        <Row class="chrome-step" title={step(1, text().open)} description={extensionsPage}>
+          <Button label={copied() ? text().copied : text().copy} onClick={copy} />
+        </Row>
+        <Row class="chrome-step" title={step(2, text().developer.title)} description={text().developer.description} />
+        <Row class="chrome-step" title={step(3, text().load)} description={folder()}><Button label={text().folder} onClick={openFolder} /></Row>
+      </>}>
+        <Row title={name()} description={state.latest?.version ? text().version(state.latest.version) : undefined}>
+          <Button label={text().folder} onClick={openFolder} />
+        </Row>
+      </Show>
+    </Section>
+  </Show>;
 }
 
 function CompactionPage() {

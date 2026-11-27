@@ -1375,7 +1375,7 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 
 [[package]]
 name = "nabu-protocol"
-version = "0.1.1-nightly.261126"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1383,7 +1383,7 @@ dependencies = [
 
 [[package]]
 name = "nabu-server"
-version = "0.1.1-nightly.261126"
+version = "0.1.1"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -1416,6 +1416,7 @@ dependencies = [
  "sha2",
  "similar",
  "tokio",
+ "tokio-tungstenite",
  "windows-sys 0.61.2",
  "zip",
 ]
@@ -1450,7 +1451,7 @@ dependencies = [
 
 [[package]]
 name = "ncore-agentrouter-bp"
-version = "0.1.1-nightly.261126"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "futures",
@@ -1462,7 +1463,7 @@ dependencies = [
 
 [[package]]
 name = "ncore-antigravity"
-version = "0.1.1-nightly.261126"
+version = "0.1.1"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -1479,7 +1480,7 @@ dependencies = [
 
 [[package]]
 name = "ncore-chatgptsub"
-version = "0.1.1-nightly.261126"
+version = "0.1.1"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -1496,7 +1497,7 @@ dependencies = [
 
 [[package]]
 name = "ncore-claudesub"
-version = "0.1.1-nightly.261126"
+version = "0.1.1"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -1522,7 +1523,7 @@ dependencies = [
 
 [[package]]
 name = "ncore-deepaiacc"
-version = "0.1.1-nightly.261126"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "futures-util",
@@ -1537,7 +1538,7 @@ dependencies = [
 
 [[package]]
 name = "ncore-grokacc"
-version = "0.1.1-nightly.261126"
+version = "0.1.1"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -1584,7 +1585,7 @@ dependencies = [
 
 [[package]]
 name = "ncore-workbuddyacc"
-version = "0.1.1-nightly.261126"
+version = "0.1.1"
 dependencies = [
  "aes-gcm",
  "base64 0.23.1",
@@ -1603,7 +1604,7 @@ dependencies = [
 
 [[package]]
 name = "ncore-zcodeacc"
-version = "0.1.1-nightly.261126"
+version = "0.1.1"
 dependencies = [
  "aes-gcm",
  "base64 0.23.1",

@@ -12,10 +12,19 @@ pub const MAX_MARKS: usize = 10;
 /// How long a description may be in the list the model gets.
 const LISTED: usize = 250;
 
+/// How much of the text the settings show.
+const PREVIEW: usize = 300;
+
+/// Claude desktop's skills inside Claude Code's global folder.
+const SYNCED: &str = "synced";
+
 #[derive(Debug, Clone)]
 pub struct Skill {
     pub name: String,
     pub description: String,
+    pub described: bool,
+    pub preview: String,
+    pub enabled: bool,
     /// The SKILL.md, or the command file.
     pub path: PathBuf,
     pub harness: SkillHarness,
@@ -38,6 +47,9 @@ impl Skill {
         SkillInfo {
             name: self.name.clone(),
             description: self.description.clone(),
+            described: self.described,
+            preview: self.preview.clone(),
+            enabled: self.enabled,
             path: self.path.display().to_string(),
             harness: self.harness,
             scope: self.scope,
@@ -59,32 +71,38 @@ pub fn content(name: &str, dir: &str, body: &str) -> String {
     format!("<skill-content name=\"{name}\" dir=\"{dir}\">\n{body}\n</skill-content>")
 }
 
-/// NabuCode's first, a project's before the global ones of the same tool; Codex's are off until turned on.
+/// NabuCode's first, a project's before the global ones of the same tool; Codex's and Claude desktop's are off until turned on.
 pub fn default_sources() -> Vec<SkillSource> {
     let harnesses = [SkillHarness::Nabucode, SkillHarness::Claude, SkillHarness::Codex];
-    harnesses
+    let mut sources: Vec<SkillSource> = harnesses
         .into_iter()
         .flat_map(|harness| {
             let enabled = harness != SkillHarness::Codex;
             [SkillScope::Project, SkillScope::Global].map(|scope| SkillSource { harness, scope, enabled })
         })
-        .collect()
+        .collect();
+    let codex = sources.iter().position(|s| s.harness == SkillHarness::Codex).unwrap_or(sources.len());
+    sources.insert(codex, SkillSource { harness: SkillHarness::Claude, scope: SkillScope::Synced, enabled: false });
+    sources
 }
 
-/// Skills of a session in `directory`; of two with one name the earlier source wins.
-pub fn find(sources: &[SkillSource], directory: &Path) -> Vec<Skill> {
+/// Skills of a session in `directory`; of two with one name the earlier source wins, unless it is turned off.
+pub fn find(sources: &[SkillSource], directory: &Path, disabled: &[String]) -> Vec<Skill> {
     let mut skills: Vec<Skill> = Vec::new();
     for source in sources.iter().filter(|s| s.enabled) {
         for (folder, kind) in folders(source, directory) {
+            // Claude desktop's skills come only from their own source
+            let skip = (source.harness == SkillHarness::Claude && source.scope == SkillScope::Global).then(|| folder.join(SYNCED));
             let found = match kind {
-                Kind::Skills => skill_files(&folder),
+                Kind::Skills => skill_files(&folder, skip.as_deref()),
                 Kind::Commands => command_files(&folder),
             };
             for (name, path) in found {
-                if skills.iter().any(|s| s.name == name) {
+                if skills.iter().any(|s| s.enabled && s.name == name) {
                     continue;
                 }
-                if let Some(skill) = read(name, path, source) {
+                if let Some(mut skill) = read(name, path, source) {
+                    skill.enabled = !disabled.contains(&skill.path.display().to_string());
                     skills.push(skill);
                 }
             }
@@ -103,16 +121,16 @@ enum Kind {
 
 /// Where a source keeps its skills; project folders from `directory` up to the project root.
 fn folders(source: &SkillSource, directory: &Path) -> Vec<(PathBuf, Kind)> {
-    let places: &[(&str, Kind)] = match source.harness {
-        SkillHarness::Nabucode => &[(".nabucode/skills", Kind::Skills)],
-        SkillHarness::Claude => &[(".claude/skills", Kind::Skills), (".claude/commands", Kind::Commands)],
-        SkillHarness::Codex => match source.scope {
-            SkillScope::Global => &[(".codex/skills", Kind::Skills), (".agents/skills", Kind::Skills)],
-            SkillScope::Project => &[(".agents/skills", Kind::Skills)],
-        },
+    let places: &[(&str, Kind)] = match (source.harness, source.scope) {
+        (SkillHarness::Nabucode, SkillScope::Project | SkillScope::Global) => &[(".nabucode/skills", Kind::Skills)],
+        (SkillHarness::Claude, SkillScope::Project | SkillScope::Global) => &[(".claude/skills", Kind::Skills), (".claude/commands", Kind::Commands)],
+        (SkillHarness::Claude, SkillScope::Synced) => &[(".claude/skills/synced", Kind::Skills)],
+        (SkillHarness::Codex, SkillScope::Global) => &[(".codex/skills", Kind::Skills), (".agents/skills", Kind::Skills)],
+        (SkillHarness::Codex, SkillScope::Project) => &[(".agents/skills", Kind::Skills)],
+        (_, SkillScope::Synced) => &[],
     };
     let bases: Vec<PathBuf> = match source.scope {
-        SkillScope::Global => dirs::home_dir().into_iter().collect(),
+        SkillScope::Global | SkillScope::Synced => dirs::home_dir().into_iter().collect(),
         SkillScope::Project => {
             let root = prompt::git::root(directory).unwrap_or_else(|| directory.to_owned());
             prompt::project_dirs(&root, directory).into_iter().rev().collect()
@@ -126,7 +144,7 @@ fn folders(source: &SkillSource, directory: &Path) -> Vec<(PathBuf, Kind)> {
 }
 
 /// SKILL.md files under `folder`, a few levels deep, named by their folder; a skill's own subfolders are not searched.
-fn skill_files(folder: &Path) -> Vec<(String, PathBuf)> {
+fn skill_files(folder: &Path, skip: Option<&Path>) -> Vec<(String, PathBuf)> {
     let mut found = Vec::new();
     let mut pending = vec![(folder.to_owned(), 0)];
     while let Some((dir, depth)) = pending.pop() {
@@ -136,7 +154,7 @@ fn skill_files(folder: &Path) -> Vec<(String, PathBuf)> {
             continue;
         }
         if depth < 3 {
-            pending.extend(subfolders(&dir).into_iter().rev().map(|d| (d, depth + 1)));
+            pending.extend(subfolders(&dir).into_iter().rev().filter(|d| Some(d.as_path()) != skip).map(|d| (d, depth + 1)));
         }
     }
     found.sort();
@@ -178,9 +196,18 @@ fn read(name: String, path: PathBuf, source: &SkillSource) -> Option<Skill> {
     let (fields, body) = header(&text);
     let field = |key: &str| fields.iter().find(|(k, _)| k == key).map(|(_, v)| v.trim().to_owned()).filter(|v| !v.is_empty());
     let first_line = || body.lines().map(|l| l.trim_start_matches('#').trim()).find(|l| !l.is_empty()).map(str::to_owned);
+    let described = field("description");
+    let preview = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    let preview = match preview.char_indices().nth(PREVIEW) {
+        Some((cut, _)) => format!("{}…", preview[..cut].trim_end()),
+        None => preview,
+    };
     Some(Skill {
         name: field("name").unwrap_or(name),
-        description: field("description").or_else(first_line).unwrap_or_default(),
+        described: described.is_some(),
+        description: described.or_else(first_line).unwrap_or_default(),
+        preview,
+        enabled: true,
         path,
         harness: source.harness,
         scope: source.scope,
@@ -270,14 +297,34 @@ mod tests {
 
         let project = |harness| SkillSource { harness, scope: SkillScope::Project, enabled: true };
         let sources = [project(SkillHarness::Nabucode), project(SkillHarness::Claude)];
-        let skills = find(&sources, &root);
+        let skills = find(&sources, &root, &[]);
         let names: Vec<(&str, &str)> = skills.iter().map(|s| (s.name.as_str(), s.description.as_str())).collect();
         assert_eq!(names, [("review", "nabucode review"), ("deploy", "deploy it"), ("git:commit", "Commits the work")]);
         assert_eq!(skills[0].body().unwrap(), "body of review");
+        assert!(skills[0].described && !skills[2].described);
+        assert_eq!(skills[2].preview, "# Commits the work Steps.");
 
         let claude_only = [SkillSource { enabled: false, ..sources[0].clone() }, sources[1].clone()];
-        let review = find(&claude_only, &root).into_iter().find(|s| s.name == "review").unwrap();
+        let review = find(&claude_only, &root, &[]).into_iter().find(|s| s.name == "review").unwrap();
         assert_eq!(review.description, "claude review");
+
+        // A turned off skill stays in the list and lets the next one of its name take its place
+        let off = [skills[0].path.display().to_string()];
+        let reviews: Vec<(String, bool)> = find(&sources, &root, &off).into_iter().filter(|s| s.name == "review").map(|s| (s.description, s.enabled)).collect();
+        assert_eq!(reviews, [("nabucode review".into(), false), ("claude review".into(), true)]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn claude_desktop_skills_are_left_out_of_the_global_folder() {
+        let root = temp("synced");
+        for dir in ["review", "synced/1a2b/chrome-browser"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("SKILL.md"), "text").unwrap();
+        }
+        let names = |skip: Option<&Path>| skill_files(&root, skip).into_iter().map(|(name, _)| name).collect::<Vec<_>>();
+        assert_eq!(names(None), ["chrome-browser", "review"]);
+        assert_eq!(names(Some(&root.join(SYNCED))), ["review"]);
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

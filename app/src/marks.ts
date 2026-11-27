@@ -69,7 +69,7 @@ const commandChoice = (command: CommandInfo): Choice => ({ kind: "command", name
 export async function loadChoices(directory: string): Promise<Choice[]> {
   if (demoMode) return [...demoCommands.map(commandChoice), ...demoSkills.map(skillChoice)];
   const [skills, listed] = await Promise.all([
-    request("skills", { directory }).then(list => list.map(skillChoice)),
+    request("skills", { directory }).then(list => list.filter(skill => skill.enabled).map(skillChoice)),
     commands ? Promise.resolve(commands) : request("commands").then(list => list.map(commandChoice)),
   ]);
   commands = listed;

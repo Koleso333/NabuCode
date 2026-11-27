@@ -138,6 +138,14 @@ export function terminalUrl(id: string, cursor: number) {
   return url.toString();
 }
 
+/** The socket of one browser tab: its frames come in, the user's input goes out. */
+export function browserUrl(id: string) {
+  const url = new URL(address!);
+  url.pathname = "/browser";
+  url.searchParams.set("id", id);
+  return url.toString();
+}
+
 /** A `/file?…` link of the server, made loadable. */
 export function fileUrl(link: string) {
   if (!link.startsWith("/file?") || !address) return link;

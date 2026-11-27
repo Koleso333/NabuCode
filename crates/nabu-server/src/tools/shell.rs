@@ -516,6 +516,12 @@ fn detach(command: &mut Command) {
 #[cfg(windows)]
 pub fn contain(child: &Child) {
     use std::os::windows::io::AsRawHandle;
+    contain_handle(child.as_raw_handle());
+}
+
+/// The same for a process known by its handle.
+#[cfg(windows)]
+pub fn contain_handle(handle: std::os::windows::io::RawHandle) {
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
@@ -534,7 +540,7 @@ pub fn contain(child: &Child) {
         );
         job as usize
     });
-    unsafe { AssignProcessToJobObject(*JOB as _, child.as_raw_handle() as _) };
+    unsafe { AssignProcessToJobObject(*JOB as _, handle as _) };
 }
 
 #[cfg(unix)]

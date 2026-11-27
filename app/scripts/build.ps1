@@ -13,6 +13,8 @@ $root = Split-Path -Parent $everyend
 Push-Location -LiteralPath $root
 try {
     $metadata = Invoke-Step cargo @('metadata', '--no-deps', '--format-version', '1') | ConvertFrom-Json
+    # The side panel of the Chrome extension goes into extension\panel first: nabu.exe carries the extension
+    Invoke-Step npm.cmd @('run', 'build:panel', '--prefix', $everyend)
     Invoke-Step cargo @('build', '--release', '-p', 'nabu-server')
     $env:NABUCODE_SERVER_EXE = Join-Path $metadata.target_directory 'release\nabu.exe'
 

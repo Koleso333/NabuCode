@@ -15,10 +15,11 @@ export function Page(props: { title: JSX.Element; action?: JSX.Element; search?:
   </div>;
 }
 
-export function Section(props: { title?: string; head?: JSX.Element; children: JSX.Element; class?: string }) {
+export function Section(props: { title?: string; head?: JSX.Element; children: JSX.Element; class?: string; note?: string }) {
   return <section class="settings-section">
     <Show when={props.head} fallback={<Show when={props.title}><h3>{props.title}</h3></Show>}>{props.head}</Show>
     <div class={`settings-card ${props.class ?? ""}`}>{props.children}</div>
+    <Show when={props.note}><div class="settings-note">{props.note}</div></Show>
   </section>;
 }
 

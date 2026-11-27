@@ -78,6 +78,13 @@ struct Tokens {
     access_token: String,
     refresh_token: Option<String>,
     expires_in: u64,
+    #[serde(default)]
+    account: Option<TokenAccount>,
+}
+
+#[derive(Deserialize)]
+struct TokenAccount {
+    uuid: Option<String>,
 }
 
 fn credentials(
@@ -97,6 +104,11 @@ fn credentials(
         expires_at: unix_ms().saturating_add(t.expires_in.saturating_mul(1000)),
         subscription_type: previous.and_then(|c| c.subscription_type.clone()),
         rate_limit_tier: previous.and_then(|c| c.rate_limit_tier.clone()),
+        account_uuid: t
+            .account
+            .and_then(|a| a.uuid)
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| previous.and_then(|c| c.account_uuid.clone())),
     })
 }
 

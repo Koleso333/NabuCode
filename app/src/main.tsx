@@ -30,8 +30,12 @@ import { Timeline } from "./chat/timeline";
 import { QuestionDock } from "./chat/question";
 import { connectDirectly, onConnected, request, startConnection } from "./server";
 import { ServerBanner } from "./server-banner";
+import { startUpdates, UpdateDialogs } from "./updates";
 import { error, setError, showFailure } from "./errors";
 import { TerminalPanel } from "./terminal-panel";
+import { panelMode, PanelHeader, PanelOffline, panelOffline, panelSession, startPanel } from "./panel";
+import { BrowserPanel } from "./browser-panel";
+import { browserTabsOf, loadBrowserTabs, openBrowserTab } from "./browsers";
 import { Selector } from "./selector";
 import { ComposerField, type FieldControl } from "./composer-field";
 import { hasContent, marksOf, piecesOf, plainText, prepend, type Piece } from "./marks";
@@ -169,6 +173,8 @@ function App() {
     void request("setCompaction", { auto, threshold: Math.min(99, threshold), customModel: custom, model: ref }).catch(() => undefined);
   };
   onCleanup(onConnected(sendCompaction));
+  // The panel's chat is temporary: the server dropped it with the connection that made it
+  if (panelMode) onCleanup(onConnected(() => { if (session()) newSession(); }));
   createEffect(on(() => ({ ...preferences.compaction }), sendCompaction, { defer: true }));
   const [localSessions, setLocalSessions] = createSignal<Session[]>([]);
   const [activeChat, setActiveChat] = createSignal<{ session: Session } | null>(null);
@@ -200,6 +206,7 @@ function App() {
   const [renaming, setRenaming] = createSignal<Project | null>(null);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
   const [terminalOpen, setTerminalOpen] = createSignal(false);
+  const [browserOpen, setBrowserOpen] = createSignal(false);
   const [filesTab, setFilesTab] = createSignal<FilesTab | null>(null);
   const [openedDiff, setOpenedDiff] = createSignal<OpenedDiff | null>(null);
   const [settingsTab, setSettingsTab] = createSignal<SettingsTab>("general");
@@ -217,7 +224,7 @@ function App() {
   // The ring shows the quotas too, so they are kept current while a chat is open; opening the panel asks again
   createEffect(() => { if ((session() || panel() === "usage") && !demoMode) watchProvider(model().provider.id); });
   const usageRing = () => Math.max(Math.min(1, context().used / context().limit), ...usageBars().map(barFraction));
-  const providerPage = () => entryOf(model().provider.id)?.auth === "custom" ? undefined : () => {
+  const providerPage = () => panelMode || entryOf(model().provider.id)?.auth === "custom" ? undefined : () => {
     openSettings();
     setSettingsTab("providers");
     openProviderPage(model().provider.id);
@@ -246,11 +253,18 @@ function App() {
   const sidebarWidth = createMemo(() => Math.min(limit(), Math.max(244, preferredSidebar())));
   const visibleSidebar = createMemo(() => sidebarOpen() ? sidebarWidth() : 0);
   const filesShown = () => !!filesTab() && !demoMode && !!activeProject().path;
-  // The chat keeps at least 420px between the panels
-  const fitFiles = (width: number) => Math.round(Math.max(300, Math.min(width, 640, windowSize().width - visibleSidebar() - 420)));
-  const visibleFiles = createMemo(() => filesShown() ? fitFiles(preferences.filesWidth) : 0);
-  const workspaceWidth = createMemo(() => windowSize().width - visibleSidebar() - visibleFiles());
-  const composerWidth = createMemo(() => Math.min(662, workspaceWidth() - 50));
+  const browserShown = () => browserOpen() && !demoMode;
+  // The chat keeps at least 420px; when the window is too narrow, the panels shrink below their own minimums
+  const panelRoom = createMemo(() => Math.max(0, windowSize().width - visibleSidebar() - 420));
+  const wantedBrowser = () => browserShown() ? Math.max(360, preferences.browserWidth) : 0;
+  const wantedFiles = () => filesShown() ? Math.max(300, Math.min(640, preferences.filesWidth)) : 0;
+  const panelScale = createMemo(() => Math.min(1, panelRoom() / Math.max(1, wantedBrowser() + wantedFiles())));
+  const visibleBrowser = createMemo(() => Math.round(wantedBrowser() * panelScale()));
+  const visibleFiles = createMemo(() => Math.round(wantedFiles() * panelScale()));
+  const fitBrowser = (width: number) => Math.round(Math.max(360, Math.min(width, panelRoom() - visibleFiles())));
+  const fitFiles = (width: number) => Math.round(Math.max(300, Math.min(width, 640, panelRoom() - visibleBrowser())));
+  const workspaceWidth = createMemo(() => windowSize().width - visibleSidebar() - visibleFiles() - visibleBrowser());
+  const composerWidth = createMemo(() => Math.min(662, workspaceWidth() - (panelMode ? 24 : 50)));
   const composerLeft = createMemo(() => (workspaceWidth() - composerWidth()) / 2 + (sidebarOpen() && workspaceWidth() >= 712 ? 1 : 0));
   const composerRight = createMemo(() => workspaceWidth() - composerWidth() - composerLeft());
   const projectChoices = createMemo(() => demoMode
@@ -296,6 +310,8 @@ function App() {
   // The chat keeps at least 220px under the title bar
   const fitTerminal = (height: number) => Math.round(Math.max(120, Math.min(height, windowSize().height - 35 - 220)));
   const terminalHeight = createMemo(() => fitTerminal(preferences.terminalHeight));
+  // A chat switched to or created with the panel open gets a tab, as opening the panel would give
+  createEffect(on(chatId, id => { if (id && browserShown()) openFirstBrowserTab(id); }));
   createEffect(on(() => activeProject().path, path => {
     setOpenedDiff(null);
     if (!path || demoMode) return;
@@ -305,7 +321,15 @@ function App() {
     }).catch(() => {});
   }));
   const chipWidth = createMemo(() => { fontReady(); return Math.min(composerWidth(), 10 + measureText(activeProject().name) + 28 + (showBranch() ? 14 + measureText(activeProject().branch) + 27 : 0)); });
-  const titleWidth = createMemo(() => { fontReady(); return session() ? Math.min(measureText(viewTitle()), Math.max(0, (windowSize().width - 315 - windowSize().width / 2 - 5) * 2)) : 0; });
+  const titleWidth = createMemo(() => {
+    fontReady();
+    if (!session()) return 0;
+    const width = windowSize().width;
+    // The explorer sits 5px after the centred title and stops a tools gap (11px) before the tools
+    const toolsLeft = width - 145 - (4 * 31 + 3 * 11);
+    const room = (toolsLeft - 11 - 49 - 5 - width / 2) * 2;
+    return Math.min(measureText(viewTitle()), Math.max(0, room));
+  });
   const titlebarStyle = createMemo(() => ({
     "--search-left": `${session() ? windowSize().width / 2 - titleWidth() / 2 - 5 - (21 + measureText(tr().window.search)) : windowSize().width / 2 - 66}px`,
     "--search-width": `${session() ? 21 + measureText(tr().window.search) : 77}px`,
@@ -376,7 +400,7 @@ function App() {
   }));
   createEffect(on([draft, attachments], () => keepCurrent(untrack(draftKey)), { defer: true }));
   const attachmentProblem = (file: Attachment) => file.image && !model().images ? tr().attachments.unsupported : undefined;
-  const canSend = () => !agentChat() && !!activeProject().path && (hasContent(draft()) || attachments().length > 0) && !attachments().some(attachmentProblem);
+  const canSend = () => !agentChat() && (panelMode || !!activeProject().path) && (hasContent(draft()) || attachments().length > 0) && !attachments().some(attachmentProblem);
   // A command runs on a chat that exists and is quiet; otherwise its mark turns red and nothing is sent
   const commandsWork = () => !!session() && !viewedBusy();
   const [commandRefused, setCommandRefused] = createSignal(false);
@@ -410,7 +434,7 @@ function App() {
     setDraft([]);
     try {
       if (!target) {
-        const created = await createSession(project().path);
+        const created = await (panelMode ? createSession("", panelSession()) : createSession(project().path));
         target = { id: created.id, title: created.title, project: project() };
         setOpenProjects(paths => new Set([...paths, target!.project.path]));
         setProjectsVisible(true);
@@ -495,6 +519,18 @@ function App() {
     setSettingsOpen(false);
     setSidebarOpen(sidebarBeforeSettings);
   }
+  // The panel has only the intro, the chat and the offline screen: any other view closes at once
+  if (panelMode) createEffect(() => {
+    if (settingsOpen()) closeSettings();
+    if (openedDiff()) setOpenedDiff(null);
+    if (filesTab()) setFilesTab(null);
+    if (browserOpen()) setBrowserOpen(false);
+    if (terminalOpen()) setTerminalOpen(false);
+    if (newProjectOpen()) setNewProjectOpen(false);
+    if (renaming()) setRenaming(null);
+    if (contextMenu()) setContextMenu(null);
+    if (removingChat()) setRemovingChat(null);
+  });
   function togglePanel(next: Panel) { setPanel(panel() === next ? null : next); }
   // The effort popup is centred over its button, which moves with the model name
   const [effortCenter, setEffortCenter] = createSignal(0);
@@ -503,6 +539,15 @@ function App() {
     const box = trigger.getBoundingClientRect();
     setEffortCenter(box.left + box.width / 2 - trigger.closest(".composer-controls")!.parentElement!.getBoundingClientRect().left);
     togglePanel("effort");
+    keepEffortInside();
+  }
+  // In a narrow window the centred popup would run past the edge
+  function keepEffortInside() {
+    const box = document.querySelector(".effort-anchor .popup")?.getBoundingClientRect();
+    if (!box) return;
+    const margin = 8;
+    const shift = Math.max(margin - box.left, 0) || Math.min(innerWidth - margin - box.right, 0);
+    if (shift) setEffortCenter(center => center + shift);
   }
   // The list opens once it is loaded: the popup takes its height from the first rows it shows
   async function openBranches() {
@@ -561,6 +606,16 @@ function App() {
   function toggleFiles(tab: FilesTab) {
     setFilesTab(filesShown() && filesTab() === tab ? null : tab);
   }
+  function toggleBrowser() {
+    if (browserShown()) return setBrowserOpen(false);
+    setBrowserOpen(true);
+    const id = chatId();
+    if (id) openFirstBrowserTab(id);
+  }
+  // The browser of a chat without tabs starts an empty one
+  function openFirstBrowserTab(id: string) {
+    void loadBrowserTabs(id).then(() => { if (!browserTabsOf(id).length) return openBrowserTab(id); }).catch(showFailure);
+  }
   function toggleTerminal() {
     if (terminalShown()) return setTerminalOpen(false);
     setTerminalOpen(true);
@@ -593,8 +648,8 @@ function App() {
       return;
     }
     if (themeKey && !event.repeat) finishThemeKey();
-    if (!demoMode && event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey && event.code === "Backquote") { event.preventDefault(); toggleTerminal(); }
-    if (!demoMode && event.ctrlKey && event.altKey && !event.metaKey && !event.shiftKey && event.code === "KeyT") { event.preventDefault(); newTerminal(); }
+    if (!demoMode && !panelMode && event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey && event.code === "Backquote") { event.preventDefault(); toggleTerminal(); }
+    if (!demoMode && !panelMode && event.ctrlKey && event.altKey && !event.metaKey && !event.shiftKey && event.code === "KeyT") { event.preventDefault(); newTerminal(); }
     if (event.code === "KeyU" && event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey && !agentChat()) { event.preventDefault(); attachFiles(); }
     if (event.key === "Escape" && newProjectOpen()) { setNewProjectOpen(false); event.preventDefault(); }
     if (event.key === "Escape" && renaming()) { setRenaming(null); event.preventDefault(); }
@@ -655,6 +710,8 @@ function App() {
     let projectReady: Promise<void> = Promise.resolve();
     const direct = directServer();
     if (direct) connectDirectly(direct);
+    else if (panelMode) startPanel();
+    if ((appWindow || demoMode) && !panelMode) void startUpdates().catch(() => {});
     if (appWindow) {
       void startConnection();
       projectReady = demoMode ? invoke<string>("project_root").then(root => {
@@ -685,7 +742,7 @@ function App() {
         const watermark = new Image();
         watermark.onload = () => resolve();
         watermark.onerror = () => resolve();
-        watermark.src = "/watermark.png";
+        watermark.src = `${import.meta.env.BASE_URL}watermark.png`;
       }), new Promise(resolve => setTimeout(resolve, 300))]);
       setFontReady(true);
       requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -742,6 +799,7 @@ function App() {
         <div class="context-menu-separator" role="separator" />
         <MenuItem icon="trash" label={tr().projectMenu.remove} onClick={() => forgetProject(target().path)} />
       </ContextMenu>}</Show>}</Show>
+    <Show when={!panelMode} fallback={<PanelHeader intro={!session()} onNewChat={newSession} />}>
     <div class="titlebar panel-frame" classList={{ "dialog-open": newProjectOpen() || !!renaming() }} style={titlebarStyle()} onPointerDown={titlePointerDown}>
       <div class="title-left">
         <IconButton name="menu" label={tr().window.menu} size={16} />
@@ -754,14 +812,16 @@ function App() {
         <IconButton name="explorer" label={tr().window.openProjectFolder} size={15} width={28} onClick={openProject} />
         <span class="explorer-divider" /><IconButton name="chevron-down" label={tr().window.fileManager} size={13} width={20} />
       </div>
-      <div class="title-tools"><IconButton name="terminal" label={tr().window.terminal} selected={terminalShown()} onClick={demoMode ? undefined : toggleTerminal} /><IconButton name="file-tree" label={tr().window.fileTree} selected={filesShown() && filesTab() === "files"} onClick={demoMode ? undefined : () => toggleFiles("files")} /><IconButton name="review" label={tr().window.changes} selected={filesShown() && filesTab() === "changes"} onClick={demoMode ? undefined : () => toggleFiles("changes")} /></div>
+      <div class="title-tools"><IconButton name="globe" label={tr().window.browser} selected={browserShown()} onClick={demoMode ? undefined : toggleBrowser} /><IconButton name="terminal" label={tr().window.terminal} selected={terminalShown()} onClick={demoMode ? undefined : toggleTerminal} /><IconButton name="file-tree" label={tr().window.fileTree} selected={filesShown() && filesTab() === "files"} onClick={demoMode ? undefined : () => toggleFiles("files")} /><IconButton name="review" label={tr().window.changes} selected={filesShown() && filesTab() === "changes"} onClick={demoMode ? undefined : () => toggleFiles("changes")} /></div>
       <div class="captions">
         <Press label={tr().window.minimize} class="caption" onClick={() => void appWindow?.minimize()}><Glyph name="window-minimize" size={12} /></Press>
         <Press label={maximized() ? tr().window.restore : tr().window.maximize} class="caption" onClick={() => void appWindow?.toggleMaximize()}><Glyph name={maximized() ? "window-restore" : "window-maximize"} size={12} /></Press>
         <Press label={tr().common.close} class="caption close-caption" onClick={() => void appWindow?.close()}><Glyph name="window-close" size={12} /></Press>
       </div>
     </div>
+    </Show>
 
+    <Show when={!panelMode}>
     <aside class="sidebar" classList={{ collapsed: !sidebarOpen() }}>
       <Show when={!settingsOpen()} fallback={<div class="sidebar-content"><SettingsNav tab={settingsTab()} onTab={setSettingsTab} onBack={closeSettings} /></div>}>
       <div class="sidebar-content">
@@ -801,17 +861,19 @@ function App() {
       </Show>
     </aside>
     <Show when={sidebarOpen()}><div class="sidebar-resize" style={{ left: `${sidebarWidth() - 3}px` }} onPointerDown={startResize} /></Show>
+    </Show>
 
     <main ref={workspace} class="workspace panel-frame" classList={{ "sidebar-open": sidebarOpen(), "files-open": filesShown(), "terminal-open": terminalShown() }}
-      style={{ left: `${visibleSidebar()}px`, right: `${visibleFiles()}px`, bottom: terminalShown() ? `${terminalHeight()}px` : undefined, "--composer-left": `${composerLeft()}px`, "--composer-right": `${composerRight()}px`, "--composer-width": `${composerWidth()}px`, "--field-height": `${fieldHeight() + queueHeight()}px`, "--queue-height": `${queueHeight()}px`, "--chip-width": `${chipWidth()}px`, "--dock-height": `${dockHeight()}px`, "--tray-height": attachments().length && !agentChat() ? "122px" : "0px" }}>
-      <Show when={!settingsOpen()} fallback={<SettingsPanel tab={settingsTab()} />}>
-      <Show when={!session()}><div class="watermark"><img src="/watermark.png" width="325" height="77" alt="" /><span>Every End</span></div></Show>
+      style={{ left: `${visibleSidebar()}px`, right: `${visibleFiles() + visibleBrowser()}px`, bottom: terminalShown() ? `${terminalHeight()}px` : undefined, "--composer-left": `${composerLeft()}px`, "--composer-right": `${composerRight()}px`, "--composer-width": `${composerWidth()}px`, "--field-height": `${fieldHeight() + queueHeight()}px`, "--queue-height": `${queueHeight()}px`, "--chip-width": `${chipWidth()}px`, "--dock-height": `${dockHeight()}px`, "--tray-height": attachments().length && !agentChat() ? "122px" : "0px" }}>
+      <Show when={!settingsOpen()} fallback={<SettingsPanel tab={settingsTab()} directory={activeProject().path} />}>
+      <Show when={!session()}><div class="watermark"><Show when={panelMode} fallback={<><img src={`${import.meta.env.BASE_URL}watermark.png`} width="325" height="77" alt="" /><span>Every End</span></>}>
+        <img class="watermark-ring" src={`${import.meta.env.BASE_URL}logo.png`} width="77" height="77" alt="" /></Show></div></Show>
       <Show when={viewedChat()} keyed>{id => <Timeline chatId={id} onOpen={openAgentChat} onBack={() => setAgentChat(null)} />}</Show>
       <Show when={viewedChat()}><div class="chat-fade" /></Show>
       <Show when={pendingAsk()}>{ask => <div class="question-anchor"><QuestionDock chatId={session()!.id} ask={ask()} onHeight={setDockHeight} /></div>}</Show>
       <div class="composer-area" classList={{ hidden: !!pendingAsk(), agent: !!agentChat() }}>
       <div class="footer-back panel-frame" />
-      <Show when={!agentChat()}>
+      <Show when={!agentChat() && !panelMode}>
       <div class="project-chip panel-frame" data-panel-trigger="project">
         <Press label={tr().composer.project(activeProject().name)} class="project-chip-name" selected={panel() === "project"} onClick={session() ? undefined : () => togglePanel("project")}>
           <Glyph name="folder" /><span class="truncate">{activeProject().name}</span>
@@ -851,7 +913,7 @@ function App() {
       <div ref={mirror} class="composer-mirror" aria-hidden="true">{plainText(draft())}{"\u200b"}</div>
       <Show when={panel() === "model"}><div class="popup-anchor model-anchor"><Selector items={availableModels().filter(item => !isHidden(item))} selected={model()} name={item => item.name} details={item => item.provider.name}
         group={item => item.provider} kind="model" onSelect={item => { pickModel(chatId(), item); closePanel(); }}
-        onAction={() => { openSettings(); setSettingsTab("models"); }} /></div></Show>
+        onAction={panelMode ? undefined : () => { openSettings(); setSettingsTab("models"); }} /></div></Show>
       <Show when={panel() === "project"}><div class="popup-anchor project-anchor"><Selector items={projectChoices()} selected={activeProject()}
         name={item => item.name} details={item => item.path} icon="folder" kind="project"
         onAction={openNewProject} onSelect={item => { if (!session()) setProject(item); closePanel(); }} /></div></Show>
@@ -881,11 +943,14 @@ function App() {
       </div>
       </Show>
       <Show when={dragging()}><DropOverlay /></Show>
+      <Show when={panelMode && panelOffline()}><PanelOffline /></Show>
       <Show when={openedDiff()}>{diff => <DiffView diff={diff()} directory={activeProject().path} onClose={() => setOpenedDiff(null)} />}</Show>
     </main>
-    <Show when={filesShown()}><FilePanel directory={activeProject().path} tab={filesTab()!} onTab={setFilesTab} width={visibleFiles()}
+    <Show when={filesShown()}><FilePanel directory={activeProject().path} tab={filesTab()!} onTab={setFilesTab} width={visibleFiles()} right={visibleBrowser()}
       bottom={terminalShown() ? terminalHeight() : 0} onWidth={width => setPreference("filesWidth", fitFiles(width))}
       messages={session() ? chats[session()!.id]?.messages : undefined} onExpand={setOpenedDiff} /></Show>
+    <Show when={browserShown()}><BrowserPanel session={chatId()} width={visibleBrowser()} bottom={terminalShown() ? terminalHeight() : 0}
+      onWidth={width => setPreference("browserWidth", fitBrowser(width))} onHide={() => setBrowserOpen(false)} /></Show>
     <Show when={terminalShown()}><TerminalPanel directory={activeProject().path} left={visibleSidebar()} height={terminalHeight()}
       onHeight={height => setPreference("terminalHeight", fitTerminal(height))} onHide={() => setTerminalOpen(false)} /></Show>
     <Show when={newProjectOpen()}><NewProjectDialog onClose={() => setNewProjectOpen(false)} onAdd={project => void addProject(project)} onError={setError} /></Show>
@@ -895,7 +960,7 @@ function App() {
         onConfirm={() => removeChat(target().chat, target().removal)} onClose={() => setRemovingChat(null)} />;
     }}</Show>
     <Show when={renaming()}>{target => <RenameProjectDialog name={target().name} onClose={() => setRenaming(null)} onSave={name => saveProjectName(target().path, name)} />}</Show>
-    <ServerBanner />
+    <Show when={!panelMode}><ServerBanner /><UpdateDialogs /></Show>
     <Show when={error()}><div class="error-toast panel-frame"><span>{error()}</span><IconButton name="close" label={tr().common.close} size={16} onClick={() => setError(null)} /></div></Show>
   </div>;
 }

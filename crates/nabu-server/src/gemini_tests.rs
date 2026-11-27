@@ -286,6 +286,9 @@ async fn gemini_refusals_keep_the_reason_and_only_block_the_affected_key_and_mod
     let Reply::Session(session) = server
         .handle(Request::SessionCreate {
             directory: root.to_string_lossy().into_owned(),
+            temporary: false,
+            tools: None,
+            chrome: None,
         })
         .await
         .unwrap()

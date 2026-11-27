@@ -23,6 +23,11 @@ pub fn set_home(data_dir: &Path) {
     let _ = HOME.set(data_dir.join("browser"));
 }
 
+/// The folder of the downloaded browser and the tools' browser profile.
+pub(super) fn home() -> Option<&'static Path> {
+    HOME.get().map(PathBuf::as_path)
+}
+
 /// The page's HTML after its scripts ran, and whether a browser had to be downloaded for it.
 pub async fn render(url: &str) -> Result<(String, bool), String> {
     let (browser, downloaded) = match installed() {
@@ -68,7 +73,7 @@ pub async fn render(url: &str) -> Result<(String, bool), String> {
 }
 
 /// The headless Chrome downloaded before (it starts fastest), else a Chromium-based browser of the user.
-fn installed() -> Option<PathBuf> {
+pub(super) fn installed() -> Option<PathBuf> {
     shell_path()
         .into_iter()
         .chain(system_browsers())
@@ -157,7 +162,7 @@ fn shell_path() -> Option<PathBuf> {
 }
 
 /// Downloads chrome-headless-shell from Chrome for Testing, once.
-async fn download() -> Result<PathBuf, String> {
+pub(super) async fn download() -> Result<PathBuf, String> {
     let _one = DOWNLOADING.lock().await;
     let target = shell_path().ok_or("no Chrome-based browser found")?;
     if target.is_file() {

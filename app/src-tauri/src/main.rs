@@ -4,6 +4,7 @@ mod dropped;
 mod editors;
 mod fonts;
 mod server;
+mod updates;
 
 use std::path::PathBuf;
 use server::{Sidecar, Status};
@@ -125,6 +126,8 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updates::Updates::default())
         .setup(|app| {
             app.manage(Sidecar::start(app.handle().clone()));
             let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("/".into()))
@@ -142,7 +145,7 @@ fn main() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![app_version, server_status, server_restart, start_folder, project_root, theme_choice, open_project, show_main, fonts::font_catalog, fonts::font_install, dropped::dropped_items, dropped::read_dropped, dropped::clipboard_files, editors::editors, editors::editor_info, editors::open_in_editor, editors::reveal_in_explorer])
+        .invoke_handler(tauri::generate_handler![app_version, server_status, server_restart, start_folder, project_root, theme_choice, open_project, show_main, fonts::font_catalog, fonts::font_install, dropped::dropped_items, dropped::read_dropped, dropped::clipboard_files, editors::editors, editors::editor_info, editors::open_in_editor, editors::reveal_in_explorer, updates::updates_supported, updates::update_check, updates::update_install, updates::update_cancel])
         .run(tauri::generate_context!())
         .expect("failed to run NabuCode");
 }

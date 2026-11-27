@@ -2,6 +2,8 @@ mod accounts_file;
 mod antigravity;
 mod api_keys;
 mod callback;
+pub mod chrome_extension;
+pub mod chrome_host;
 mod chatgpt;
 mod claude;
 mod custom_providers;
@@ -19,6 +21,7 @@ mod sessions;
 mod skills;
 pub mod terminal;
 mod tools;
+pub use tools::browser_panel;
 mod workbuddy;
 mod zcode;
 
@@ -65,6 +68,7 @@ impl Server {
         model_transport: Arc<dyn ncore::Transport>,
     ) -> Self {
         let (events, _) = broadcast::channel(256);
+        tools::browser_panel::send_events_to(events.clone());
         let antigravity = antigravity::Accounts::load(
             data_dir.join("antigravity-accounts.json"),
             net.clone(),
@@ -333,8 +337,8 @@ impl Server {
                 Ok(Reply::Sessions(self.sessions.list(&directory)))
             }
             Request::SessionRecent { limit } => Ok(Reply::Sessions(self.sessions.recent(limit))),
-            Request::SessionCreate { directory } => {
-                Ok(Reply::Session(self.sessions.create(directory)))
+            Request::SessionCreate { directory, temporary, tools, chrome } => {
+                self.sessions.create(directory, temporary, tools, chrome).map(Reply::Session).map_err(failed)
             }
             Request::SessionGet { session_id } => self
                 .sessions
@@ -361,7 +365,7 @@ impl Server {
                 .map(|_| Reply::Done(Done {}))
                 .map_err(failed),
             Request::Skills { directory } => {
-                Ok(Reply::Skills(self.sessions.skills(&directory).iter().map(skills::Skill::info).collect()))
+                Ok(Reply::Skills(self.sessions.found_skills(&directory).iter().map(skills::Skill::info).collect()))
             }
             Request::SkillSources => Ok(Reply::SkillSources(self.sessions.skill_sources())),
             Request::SetSkillSources { sources } => self
@@ -369,6 +373,10 @@ impl Server {
                 .set_skill_sources(sources)
                 .map(|_| Reply::Done(Done {}))
                 .map_err(failed),
+            Request::SetDisabledSkills { paths } => {
+                self.sessions.set_disabled_skills(paths);
+                Ok(Reply::Done(Done {}))
+            }
             Request::Commands => Ok(Reply::Commands(sessions::commands())),
             Request::SetCompaction(settings) => self
                 .sessions
@@ -458,6 +466,27 @@ impl Server {
                 self.terminals.close(&id);
                 done
             }
+            Request::BrowserTabs { session_id } => Ok(Reply::BrowserTabs(tools::browser_panel::tabs_of(&self.sessions.chat_of(&session_id)))),
+            Request::BrowserOpen { session_id, url } => tools::browser_panel::open(&self.sessions.chat_of(&session_id), &url)
+                .await
+                .map(Reply::BrowserTab)
+                .map_err(failed),
+            Request::BrowserGo { id, url, search } => tools::browser_panel::go(&id, &url, search.as_deref()).await.map(|_| Reply::Done(Done {})).map_err(failed),
+            Request::BrowserStored => Ok(Reply::BrowserStored(tools::browser_panel::stored())),
+            Request::ChromeExtension => Ok(Reply::ChromeExtension(nabu_protocol::ChromeExtension {
+                connected: tools::browser_panel::chrome_connected(),
+                version: chrome_extension::installed_version(),
+                folder: chrome_extension::folder().map(|folder| folder.display().to_string()),
+            })),
+            Request::BrowserClear { sites } => match sites {
+                true => tools::browser_panel::clear_site_data().await,
+                false => tools::browser_panel::clear_cache().await,
+            }
+            .map(|_| Reply::Done(Done {}))
+            .map_err(failed),
+            Request::BrowserHistory { id, step } => tools::browser_panel::history(&id, step).await.map(|_| Reply::Done(Done {})).map_err(failed),
+            Request::BrowserReload { id } => tools::browser_panel::reload(&id).await.map(|_| Reply::Done(Done {})).map_err(failed),
+            Request::BrowserClose { id } => tools::browser_panel::close(&id).await.map(|_| Reply::Done(Done {})).map_err(failed),
             Request::ProjectList => Ok(Reply::Projects(self.projects.list())),
             Request::ProjectAdd { path, name } => self.projects.add(path, name).map(Reply::Projects).map_err(failed),
             Request::ProjectRename { path, name } => self.projects.rename(&path, name).map(Reply::Projects).map_err(failed),

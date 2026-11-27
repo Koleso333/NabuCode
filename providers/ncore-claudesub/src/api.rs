@@ -6,8 +6,7 @@ use ncore::{Error, HttpRequest, HttpResponse, Next, Transport};
 use serde_json::Value;
 
 pub const API_BASE: &str = "https://api.anthropic.com";
-/// Interactive Claude Code CLI; it carries no machine details.
-pub const USER_AGENT: &str = "claude-cli/2.1.322 (external, cli)";
+pub use crate::identity::USER_AGENT;
 const MAX_BODY: usize = 2 * 1024 * 1024;
 
 pub(crate) fn fail(message: impl Into<String>) -> Error {
@@ -15,6 +14,12 @@ pub(crate) fn fail(message: impl Into<String>) -> Error {
         name: "claudesub".into(),
         message: message.into(),
     }
+}
+
+pub(crate) fn random_id() -> String {
+    let mut bytes = [0u8; 16];
+    let _ = getrandom::fill(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 pub(crate) fn message(error: &Error) -> String {

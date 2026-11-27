@@ -21,6 +21,7 @@ fn credentials(expired: bool) -> Credentials {
         expires_at: if expired { 0 } else { u64::MAX },
         subscription_type: Some("pro".into()),
         rate_limit_tier: None,
+        account_uuid: Some("acc-uuid".into()),
     }
 }
 
@@ -174,8 +175,11 @@ async fn generation_snapshot_matches_request_hooks_and_header_limits_are_normali
         .generate(&ep, &req(), &options, &CancelToken::new())
         .await
         .unwrap();
-    assert_eq!(generation.request, transport.seen.lock().unwrap()[0].body);
+    // The account middleware adds only metadata after the request hooks.
+    let mut sent: Value = serde_json::from_slice(&transport.seen.lock().unwrap()[0].body).unwrap();
+    sent.as_object_mut().unwrap().remove("metadata");
     let v: Value = serde_json::from_slice(&generation.request).unwrap();
+    assert_eq!(v, sent);
     assert_eq!(v["system"][1]["text"], "Host system");
     assert_eq!(v["system"][1]["cache_control"]["type"], "ephemeral");
     assert_eq!(
@@ -612,4 +616,47 @@ async fn oauth_pkce_and_state_are_validated_before_exchange() {
         body["redirect_uri"],
         ncore_claudesub::oauth::REDIRECT_URI
     );
+}
+
+#[tokio::test]
+async fn requests_look_like_claude_code_with_a_machine_pinned_to_the_account() {
+    let transport = Arc::new(Mock::default());
+    let plugin = Arc::new(ClaudeSub::new(Arc::new(MemoryStore::new(credentials(false)))));
+    let ep = ClaudeSub::endpoint().with_plugin(plugin);
+    let core = Core::builder(transport.clone()).build();
+    let options = GenerateOptions {
+        headers: vec![
+            (ncore_claudesub::SESSION_HEADER.into(), "chat-1".into()),
+            ("anthropic-beta".into(), "fast-mode-2026-02-01".into()),
+            ("x-stainless-os".into(), "Plan9".into()),
+        ],
+        ..Default::default()
+    };
+    for _ in 0..2 {
+        core.generate(&ep, &req(), &options, &CancelToken::new()).await.unwrap();
+    }
+    let seen = transport.seen.lock().unwrap();
+    let sent = &seen[0];
+    assert!(sent.url.ends_with("/v1/messages?beta=true"));
+    assert_eq!(header(&sent.headers, "user-agent"), Some("claude-cli/2.1.322 (external, cli)"));
+    assert_eq!(header(&sent.headers, "x-app"), Some("cli"));
+    let betas = header(&sent.headers, "anthropic-beta").unwrap();
+    assert!(betas.starts_with("claude-code-20250219,oauth-2025-04-20,"));
+    assert!(betas.ends_with(",fast-mode-2026-02-01"));
+    let os: Vec<_> = sent.headers.iter().filter(|(k, _)| k.eq_ignore_ascii_case("x-stainless-os")).collect();
+    assert_eq!(os.len(), 1);
+    assert_ne!(os[0].1, "Plan9");
+    let session = header(&sent.headers, ncore_claudesub::SESSION_HEADER).unwrap();
+    assert_eq!(session.len(), 36);
+    let v: Value = serde_json::from_slice(&sent.body).unwrap();
+    let user: Value = serde_json::from_str(v["metadata"]["user_id"].as_str().unwrap()).unwrap();
+    assert_eq!(user["account_uuid"], "acc-uuid");
+    assert_eq!(user["session_id"], session);
+    assert_eq!(user["device_id"].as_str().unwrap().len(), 64);
+    assert!(v["metadata"]["user_id"].as_str().unwrap().starts_with(r#"{"device_id":"#));
+    for (k, val) in &sent.headers {
+        if k != "authorization" {
+            assert_eq!(header(&seen[1].headers, k), Some(val.as_str()), "{k} must stay the same");
+        }
+    }
 }

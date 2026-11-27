@@ -7,6 +7,10 @@ use ncore::{CancelToken, Tools};
 use serde_json::{Value, json};
 
 pub use agent::Ask;
+pub use browse::close_chat as close_browser_tabs;
+pub mod browser_panel {
+    pub use super::browse::{chrome_connected, chrome_link, clear_cache, clear_site_data, close_tab as close, go, history, open_tab as open, reload, send_events_to, stored, stream, tabs_of};
+}
 pub use jobs::Jobs;
 
 use crate::sessions::{Interrupt, Sessions, Spawner};
@@ -15,6 +19,7 @@ use crate::skills::Skill;
 mod agent;
 mod ask;
 pub mod browser;
+mod browse;
 mod changes;
 mod edit;
 mod fetch;
@@ -50,10 +55,12 @@ enum Run {
     Programs(fn(&Path, &Value, &Signals, &Jobs) -> Result<String, String>),
     /// Talks to the network: runs on the async threads and touches no files.
     Web(fn(Value) -> BoxFuture<'static, Result<String, String>>),
+    /// Works in the chat's browser tabs.
+    Browser(fn(browse::Call) -> BoxFuture<'static, Result<Vec<Block>, String>>),
 }
 
 /// Definition, name, run, and whether the tool must run alone: file edits do, reads and shells share.
-const TOOLS: [(fn() -> ToolDef, &str, Run, bool); 11] = [
+const TOOLS: [(fn() -> ToolDef, &str, Run, bool); 18] = [
     (read::def, "read", Run::Content(read::run), false),
     (list::def, "list", Run::Files(list::run), false),
     (glob::def, "glob", Run::Files(glob::run), false),
@@ -85,13 +92,46 @@ const TOOLS: [(fn() -> ToolDef, &str, Run, bool); 11] = [
         Run::Web(|args| boxed(fetch::run(args))),
         false,
     ),
+    (browse::open_def, "browser_open", Run::Browser(|call| boxed(browse::open(call))), false),
+    (browse::tabs_def, "browser_tabs", Run::Browser(|call| boxed(browse::tabs(call))), false),
+    (browse::state_def, "browser_state", Run::Browser(|call| boxed(browse::page_state(call))), false),
+    (browse::act_def, "browser_act", Run::Browser(|call| boxed(browse::act(call))), false),
+    (browse::read_def, "browser_read", Run::Browser(|call| boxed(browse::read(call))), false),
+    (browse::js_def, "browser_js", Run::Browser(|call| boxed(browse::js(call))), false),
+    (browse::logs_def, "browser_logs", Run::Browser(|call| boxed(browse::logs(call))), false),
 ];
 
-/// Tools the model loads with `tools` when it needs them, with what each is for.
-const DEFERRED: [(&str, &str); 2] = [("search", search::BRIEF), ("fetch", fetch::BRIEF)];
+/// Groups of tools the model loads with `tools` when it needs them: name, what they are for, their tools.
+const DEFERRED: [(&str, &str, &[&str]); 3] = [
+    ("search", search::BRIEF, &["search"]),
+    ("fetch", fetch::BRIEF, &["fetch"]),
+    (
+        "browser",
+        browse::BRIEF,
+        &["browser_open", "browser_tabs", "browser_state", "browser_act", "browser_read", "browser_js", "browser_logs"],
+    ),
+];
 
-fn deferred(name: &str) -> bool {
-    DEFERRED.iter().any(|(n, _)| *n == name)
+/// A group with its tools in brackets, when they have other names: `browser (browser_open, browser_tabs)`.
+fn with_tools(group: &str) -> String {
+    match DEFERRED.iter().find(|(name, _, tools)| *name == group && tools != &[group]) {
+        Some((_, _, tools)) => format!("{group} ({})", tools.join(", ")),
+        None => group.to_owned(),
+    }
+}
+
+/// Whether the tool is loaded on demand.
+fn deferred(tool: &str) -> bool {
+    DEFERRED.iter().any(|(_, _, tools)| tools.contains(&tool))
+}
+
+fn is_group(name: &str) -> bool {
+    DEFERRED.iter().any(|(group, _, _)| *group == name)
+}
+
+/// The group a deferred tool loads with; other tools stand for themselves.
+fn group_of(tool: &str) -> &str {
+    DEFERRED.iter().find(|(_, _, tools)| tools.contains(&tool)).map_or(tool, |(group, _, _)| group)
 }
 
 /// Whether the machine has what the tool needs.
@@ -103,13 +143,16 @@ fn offered(name: &str) -> bool {
     }
 }
 
-/// Names of the tools this machine offers, without `agent`.
+/// Names of the tools this machine offers, without `agent`; a group of deferred tools by its name.
 pub fn names() -> Vec<&'static str> {
-    TOOLS
-        .iter()
-        .map(|(_, name, _, _)| *name)
-        .filter(|name| offered(name))
-        .collect()
+    let mut names: Vec<&'static str> = Vec::new();
+    for (_, name, _, _) in TOOLS.iter().filter(|(_, name, _, _)| offered(name)) {
+        let name = group_of(name);
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
 }
 
 /// The tools of one session, working relative to its directory.
@@ -131,6 +174,10 @@ pub struct Toolbox {
     interrupt: Arc<Interrupt>,
     /// Skills the model may load with `skill`.
     skills: Vec<Skill>,
+    /// The chat whose browser tabs the tools see: a subagent works in its parent's.
+    chat: String,
+    /// The extension's id of the Chrome the chat works in.
+    chrome: Option<String>,
 }
 
 impl Toolbox {
@@ -145,7 +192,14 @@ impl Toolbox {
             shown_in: None,
             interrupt: Default::default(),
             skills: Vec::new(),
+            chat: String::new(),
+            chrome: None,
         }
+    }
+
+    pub fn in_chat(mut self, chat: String, chrome: Option<String>) -> Self {
+        (self.chat, self.chrome) = (chat, chrome);
+        self
     }
 
     pub fn with_skills(mut self, skills: Vec<Skill>) -> Self {
@@ -183,11 +237,11 @@ impl Toolbox {
             .allowed
             .iter()
             .flatten()
-            .filter(|n| deferred(n))
+            .filter(|n| is_group(n))
             .cloned();
         let mut loaded: Vec<String> = Vec::new();
         for name in names.into_iter().chain(given) {
-            if deferred(&name) && self.allows(&name) && !loaded.contains(&name) {
+            if is_group(&name) && self.allows(&name) && !loaded.contains(&name) {
                 loaded.push(name);
             }
         }
@@ -198,18 +252,19 @@ impl Toolbox {
     fn allows(&self, name: &str) -> bool {
         self.allowed
             .as_ref()
-            .is_none_or(|list| list.iter().any(|n| n == name))
+            .is_none_or(|list| list.iter().any(|n| n == name || n == group_of(name)))
     }
 
-    fn is_loaded(&self, name: &str) -> bool {
-        self.loaded.lock().unwrap().iter().any(|n| n == name)
+    fn is_loaded(&self, tool: &str) -> bool {
+        self.loaded.lock().unwrap().iter().any(|n| n == group_of(tool))
     }
 
     /// Deferred tools this session may load.
     fn loadable(&self) -> Vec<(&'static str, &'static str)> {
         DEFERRED
             .into_iter()
-            .filter(|(name, _)| offered(name) && self.allows(name))
+            .filter(|(name, _, _)| offered(name) && self.allows(name))
+            .map(|(name, brief, _)| (name, brief))
             .collect()
     }
 
@@ -237,7 +292,7 @@ impl Toolbox {
             true => format!("already loaded: {}", loaded.join(", ")),
             false => format!(
                 "loaded {}; you can call them from your next step",
-                new.join(", ")
+                new.iter().map(|n| with_tools(n)).collect::<Vec<_>>().join(", ")
             ),
         })
     }
@@ -247,7 +302,9 @@ impl Toolbox {
         let loadable = self.loadable();
         TOOLS
             .iter()
-            .filter(|(_, name, _, _)| loadable.iter().any(|(l, _)| l == name) && !self.is_loaded(name))
+            .filter(|(_, name, _, _)| {
+                deferred(name) && loadable.iter().any(|(l, _)| *l == group_of(name)) && !self.is_loaded(name)
+            })
             .map(|(def, _, _, _)| def())
             .collect()
     }
@@ -275,7 +332,8 @@ impl Toolbox {
         }
         if deferred(name) && !self.is_loaded(name) {
             return Err(format!(
-                "`{name}` is not loaded yet: call `tools` with load: [\"{name}\"] first"
+                "`{name}` is not loaded yet: call `tools` with load: [\"{}\"] first",
+                group_of(name)
             ));
         }
         if let (Some(spawner), "ask") = (&self.spawner, name) {
@@ -298,6 +356,10 @@ impl Toolbox {
         };
         if let Run::Web(run) = run {
             return web::until_stopped(signals, run(args)).await.map(text);
+        }
+        if let Run::Browser(run) = run {
+            let call = browse::Call { chat: self.chat.clone(), chrome: self.chrome.clone(), directory: self.directory.clone(), args };
+            return web::until_stopped(signals, run(call)).await;
         }
         let _alone = if alone {
             Some(self.order.write().await)
@@ -324,7 +386,7 @@ impl Toolbox {
             }
             Run::Content(run) => (run(&directory, &args), Vec::new()),
             Run::Programs(run) => (run(&directory, &args, &signals, &jobs).map(text), Vec::new()),
-            Run::Web(_) => unreachable!("web tools run above"),
+            Run::Web(_) | Run::Browser(_) => unreachable!("web and browser tools run above"),
         });
         let (result, files) = task.await.map_err(|e| format!("the tool crashed: {e}"))?;
         if let (Some((sessions, session)), false) = (&self.shown_in, files.is_empty()) {
@@ -354,14 +416,12 @@ impl Tools for Toolbox {
             defs.push(skill::def(&self.skills));
         }
         let loadable = self.loadable();
-        if !loadable.is_empty() {
+        if loadable.iter().any(|(group, _)| !self.is_loaded(group)) {
             defs.push(tools_def(&loadable));
         }
         // Loaded ones last, in load order: the tools before them keep their place in the cached prefix.
-        for name in self.loaded.lock().unwrap().iter() {
-            if let Some((def, _, _, _)) = TOOLS.iter().find(|(_, n, _, _)| n == name) {
-                defs.push(def());
-            }
+        for group in self.loaded.lock().unwrap().iter() {
+            defs.extend(TOOLS.iter().filter(|(_, n, _, _)| group_of(n) == group).map(|(def, _, _, _)| def()));
         }
         defs
     }
@@ -406,7 +466,7 @@ impl Tools for Toolbox {
 fn tools_def(loadable: &[(&str, &str)]) -> ToolDef {
     let list: Vec<String> = loadable
         .iter()
-        .map(|(name, brief)| format!("- {name}: {brief}"))
+        .map(|(name, brief)| format!("- {}: {brief}", with_tools(name)))
         .collect();
     def(
         "tools",
@@ -570,6 +630,17 @@ mod tests {
         std::fs::write(root.join("target/out.rs"), "fn list() {}\n").unwrap();
         std::fs::write(root.join("blob.bin"), b"list\0\0").unwrap();
         root
+    }
+
+    #[test]
+    fn a_session_limited_to_a_group_has_its_tools_loaded() {
+        let toolbox = Toolbox::new(&std::env::temp_dir(), Arc::default()).limited(Some(vec!["browser".into()])).loading(Vec::new());
+        let names: Vec<String> = toolbox.definitions().into_iter().filter_map(|d| match d {
+            ToolDef::Function(tool) => Some(tool.name),
+            _ => None,
+        }).collect();
+        let browser = ["browser_open", "browser_tabs", "browser_state", "browser_act", "browser_read", "browser_js", "browser_logs"];
+        assert_eq!(names, browser);
     }
 
     #[test]

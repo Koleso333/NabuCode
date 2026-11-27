@@ -84,6 +84,10 @@ export type Session = {
   /** The session whose agent started this one as a subagent. */
   parentID?: string
   compactions?: SessionCompaction[]
+  /** No project: `directory` is the session's own folder. */
+  noProject?: boolean
+  /** Never saved; ends when the connection that made it closes. */
+  temporary?: boolean
 }
 
 export type SessionCompaction = {
@@ -246,11 +250,11 @@ export type PromptPart =
   | { type: "command"; id: string; name: string }
 
 export type SkillHarness = "nabucode" | "claude" | "codex"
-export type SkillScope = "project" | "global"
+export type SkillScope = "project" | "global" | "synced"
 /** The order of sources says whose skill wins when names repeat. */
 export type SkillSource = { harness: SkillHarness; scope: SkillScope; enabled: boolean }
 /** `path` is the SKILL.md, or the file of an old Claude Code command. */
-export type SkillInfo = { name: string; description: string; path: string; harness: SkillHarness; scope: SkillScope }
+export type SkillInfo = { name: string; description: string; described: boolean; preview: string; enabled: boolean; path: string; harness: SkillHarness; scope: SkillScope }
 export type CommandInfo = { name: string; description: string }
 
 export type QuestionOption = { label: string; description: string }
@@ -270,6 +274,11 @@ type Done = Record<string, never>
 /** A shell installed on the server machine. */
 /** `number` is the tab title number: the lowest free one in the project folder. */
 export type TerminalInfo = { id: string; number: number }
+
+/** `id` is the DevTools target; `number` is how the chat's model knows the tab; `favicon` is a `data:` URL. */
+export type BrowserStored = { cache: boolean; sites: boolean }
+export type ChromeExtension = { connected: boolean; version: string | null; folder: string | null }
+export type BrowserTab = { id: string; number: number; title: string; url: string; favicon: string | null; loading: boolean }
 
 export type Shell = {
   id: string
@@ -376,7 +385,11 @@ export type Requests = {
   nvidiaBuildCheckAll: { params: undefined; result: Done }
   sessionList: { params: { directory: string }; result: Session[] }
   sessionRecent: { params: { limit: number }; result: Session[] }
-  sessionCreate: { params: { directory: string }; result: Session }
+  /**
+   * An empty `directory` makes a session without a project; a temporary one ends with the connection that made it.
+   * `tools` limits the session to these tools or groups (`["browser"]`); `chrome` is the NabuCode extension's id of the Chrome it works in.
+   */
+  sessionCreate: { params: { directory?: string; temporary?: boolean; tools?: string[]; chrome?: string }; result: Session }
   sessionGet: { params: { sessionID: string }; result: Session }
   sessionStatuses: { params: { directory: string }; result: Record<string, SessionStatus> }
   sessionMessages: { params: { sessionID: string }; result: MessageWithParts[] }
@@ -392,6 +405,7 @@ export type Requests = {
   skills: { params: { directory: string }; result: SkillInfo[] }
   skillSources: { params: undefined; result: SkillSource[] }
   setSkillSources: { params: { sources: SkillSource[] }; result: Done }
+  setDisabledSkills: { params: { paths: string[] }; result: Done }
   commands: { params: undefined; result: CommandInfo[] }
   sessionAbort: { params: { sessionID: string }; result: Done }
   /** The queued prompt goes to the model now: a reply being written is cut off, running tools wrap up. The rest keeps waiting. */
@@ -417,6 +431,17 @@ export type Requests = {
   terminalList: { params: { directory: string }; result: TerminalInfo[] }
   terminalResize: { params: { id: string; cols: number; rows: number }; result: Done }
   terminalClose: { params: { id: string }; result: Done }
+  /** Tabs of the session's chat; frames and input go through the `/browser?id=` socket. */
+  browserTabs: { params: { sessionID: string }; result: BrowserTab[] }
+  /** An empty `url` opens an empty tab. */
+  browserOpen: { params: { sessionID: string; url: string }; result: BrowserTab }
+  browserGo: { params: { id: string; url: string; search?: string }; result: Done }
+  browserClear: { params: { sites: boolean }; result: Done }
+  browserStored: { params: undefined; result: BrowserStored }
+  chromeExtension: { params: undefined; result: ChromeExtension }
+  browserHistory: { params: { id: string; step: -1 | 1 }; result: Done }
+  browserReload: { params: { id: string }; result: Done }
+  browserClose: { params: { id: string }; result: Done }
   projectList: { params: undefined; result: Project[] }
   projectAdd: { params: { path: string; name: string }; result: Project[] }
   projectRename: { params: { path: string; name: string }; result: Project[] }
@@ -473,6 +498,7 @@ export type NabuEvent =
   /** Answered, dismissed, or gone with its turn. */
   | { type: "questionClosed"; directory: string; sessionID: string; requestID: string }
   | { type: "terminalExited"; id: string }
+  | { type: "browserTabsChanged"; sessionID: string; tabs: BrowserTab[] }
   | { type: "projectsChanged"; projects: Project[] }
   | { type: "filesChanged"; directory: string }
 

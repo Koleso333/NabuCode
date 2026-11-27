@@ -53,11 +53,15 @@ struct State {
     asked_compaction: std::collections::HashSet<String>,
     /// Where skills are looked for, the first source winning.
     skill_sources: Vec<nabu_protocol::SkillSource>,
+    /// Files of the skills turned off.
+    disabled_skills: Vec<String>,
 }
 
 /// Chat sessions: history on disk, replies streamed to clients as events.
 pub struct Sessions {
     store: Store,
+    /// Folders of saved sessions without a project.
+    chats: std::path::PathBuf,
     archive: Archive,
     models: Arc<Models>,
     events: broadcast::Sender<Event>,
@@ -90,6 +94,7 @@ impl Sessions {
             .collect();
         let sessions = Arc::new(Self {
             store,
+            chats: data.join("chats"),
             archive: Archive::load(data.join("archive")),
             models,
             events,
@@ -109,7 +114,7 @@ impl Sessions {
             .docs
             .values()
             .map(|d| &d.session)
-            .filter(|s| s.directory == directory)
+            .filter(|s| s.directory == directory && !s.temporary)
             .cloned()
             .collect();
         list.sort_by(|a, b| a.id.cmp(&b.id));
@@ -122,7 +127,7 @@ impl Sessions {
             .docs
             .values()
             .map(|d| &d.session)
-            .filter(|s| s.parent_id.is_none())
+            .filter(|s| s.parent_id.is_none() && !s.temporary)
             .cloned()
             .collect();
         list.sort_by(|a, b| b.time.updated.cmp(&a.time.updated));
@@ -130,8 +135,18 @@ impl Sessions {
         list
     }
 
-    pub fn create(&self, directory: String) -> Session {
-        self.add(directory, UNTITLED.into(), None, None)
+    /// An empty `directory` gives the session a folder of its own: under the data folder, or in temp for a temporary one.
+    pub fn create(&self, directory: String, temporary: bool, tools: Option<Vec<String>>, chrome: Option<String>) -> Result<Session, String> {
+        let id = id::descending("ses");
+        let no_project = directory.trim().is_empty();
+        let directory = match (no_project, temporary) {
+            (false, _) => directory,
+            (true, false) => own_folder(&self.chats.join(&id))?,
+            (true, true) => own_folder(&std::env::temp_dir().join("nabucode-chats").join(&id))?,
+        };
+        let mut session = self.blank(id, directory, UNTITLED.into(), None);
+        (session.no_project, session.temporary) = (no_project, temporary);
+        Ok(self.add(session, tools, chrome))
     }
 
     /// A session for a subagent of `parent`, in the same directory.
@@ -141,34 +156,32 @@ impl Sessions {
         title: &str,
         tools: Option<Vec<String>>,
     ) -> Result<Session, String> {
-        let directory = self.get(parent)?.directory;
-        Ok(self.add(directory, named(title), Some(parent.into()), tools))
+        let parent_session = self.get(parent)?;
+        let mut session = self.blank(id::descending("ses"), parent_session.directory, named(title), Some(parent.into()));
+        (session.no_project, session.temporary) = (parent_session.no_project, parent_session.temporary);
+        Ok(self.add(session, tools, None))
     }
 
-    fn add(
-        &self,
-        directory: String,
-        title: String,
-        parent_id: Option<String>,
-        tools: Option<Vec<String>>,
-    ) -> Session {
+    fn blank(&self, id: String, directory: String, title: String, parent_id: Option<String>) -> Session {
         let now = id::now();
-        let session = Session {
-            id: id::descending("ses"),
+        Session {
+            id,
             directory,
             title,
-            time: SessionTime {
-                created: now,
-                updated: now,
-                archived: None,
-            },
+            time: SessionTime { created: now, updated: now, archived: None },
             parent_id,
             compactions: Vec::new(),
-        };
+            no_project: false,
+            temporary: false,
+        }
+    }
+
+    fn add(&self, session: Session, tools: Option<Vec<String>>, chrome: Option<String>) -> Session {
         let mut doc = Doc {
             session: session.clone(),
             messages: Vec::new(),
             tools,
+            chrome,
             compact: None,
         };
         self.store.save(&mut doc);
@@ -354,7 +367,9 @@ impl Sessions {
 
     /// Packs the session with its subagents' sessions into a zip and takes them out of the lists.
     pub fn archive(&self, id: &str) -> Result<(), String> {
-        self.get(id)?;
+        if self.get(id)?.temporary {
+            return Err("a temporary session can't be archived".into());
+        }
         let ids = self.tree(id);
         ids.iter().for_each(|id| self.stop(id));
         let mut docs: Vec<Doc> = {
@@ -415,17 +430,41 @@ impl Sessions {
         self.stop(id);
         let doc = self.state.lock().unwrap().docs.remove(id).ok_or_else(|| missing(id))?;
         self.store.remove(id);
+        // Subagents work in their parent's folder
+        if doc.session.no_project && doc.session.parent_id.is_none() {
+            let _ = std::fs::remove_dir_all(&doc.session.directory);
+        }
         self.emit(Event::SessionDeleted {
             session: doc.session,
         });
         Ok(())
     }
 
-    /// Ends the session's reply, queued messages and background tasks.
+    /// Ends the session's reply, queued messages, background tasks and browser tabs.
     fn stop(&self, id: &str) {
         self.state.lock().unwrap().queue.remove(id);
         self.abort(id);
         self.state.lock().unwrap().jobs.remove(id);
+        crate::tools::close_browser_tabs(id);
+    }
+
+    /// The Chrome the session's chat works in.
+    pub fn chrome_of(&self, id: &str) -> Option<String> {
+        let chat = self.chat_of(id);
+        self.state.lock().unwrap().docs.get(&chat).and_then(|d| d.chrome.clone())
+    }
+
+    /// The chat a session belongs to: its own id, or the top session above a subagent's.
+    pub fn chat_of(&self, id: &str) -> String {
+        let state = self.state.lock().unwrap();
+        let mut chat = id.to_owned();
+        for _ in 0..16 {
+            match state.docs.get(&chat).and_then(|d| d.session.parent_id.clone()) {
+                Some(parent) => chat = parent,
+                None => break,
+            }
+        }
+        chat
     }
 
     /// The session with its subagents' sessions at any depth, the session first.
@@ -891,4 +930,10 @@ fn title_of(parts: &[Part]) -> String {
         Some((cut, _)) => format!("{}…", line[..cut].trim_end()),
         None => line.to_owned(),
     }
+}
+
+/// Makes a session's own folder; its path as the session's directory.
+fn own_folder(path: &std::path::Path) -> Result<String, String> {
+    std::fs::create_dir_all(path).map_err(|e| format!("creating {} failed: {e}", path.display()))?;
+    Ok(path.to_string_lossy().into_owned())
 }

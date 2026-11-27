@@ -20,6 +20,9 @@ pub struct Credentials {
     pub subscription_type: Option<String>,
     #[serde(default)]
     pub rate_limit_tier: Option<String>,
+    /// Anthropic account id; seeds the account's fake Claude Code machine.
+    #[serde(default)]
+    pub account_uuid: Option<String>,
 }
 
 impl fmt::Debug for Credentials {
@@ -33,6 +36,7 @@ impl fmt::Debug for Credentials {
             .field("expires_at", &self.expires_at)
             .field("subscription_type", &self.subscription_type)
             .field("rate_limit_tier", &self.rate_limit_tier)
+            .field("account_uuid", &self.account_uuid)
             .finish()
     }
 }

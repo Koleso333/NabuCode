@@ -2,7 +2,7 @@ use bytes::Bytes;
 use ncore::core::json::{self, JsonPath, Patch};
 use serde_json::value::RawValue;
 
-pub const IDENTITY: &str = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
+pub const IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 
 /// Adds one separate first system block. Everything outside `system`, including schemas,
 /// tool input ordering, cache marks and signed history, stays byte-for-byte intact.

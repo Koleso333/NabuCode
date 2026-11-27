@@ -100,8 +100,8 @@ export const archiveSession = (id: string) => request("sessionArchive", { sessio
 /** The queued message goes to the model now: the reply being written is cut off, running tools wrap up; the rest keeps waiting. */
 export const interruptSession = (id: string, messageId: string) => request("sessionInterrupt", { sessionID: id, messageID: messageId });
 
-export async function createSession(directory: string) {
-  const session = await request("sessionCreate", { directory: serverPath(directory) });
+export async function createSession(directory: string, options?: { temporary?: boolean; tools?: string[]; chrome?: string }) {
+  const session = await request("sessionCreate", { directory: serverPath(directory), ...options });
   setSessions(session.id, session);
   loaded.add(session.id);
   ensureChat(session.id, session.title);
@@ -220,6 +220,7 @@ function toPart(part: Exclude<WirePart, FilePart> | Exclude<Prompt["parts"][numb
     state: {
       status: state.status, input: state.input,
       output: state.status === "completed" ? state.output : undefined,
+      images: state.status === "completed" ? state.attachments?.filter(file => file.mime.startsWith("image/")).map(file => fileUrl(file.url)) : undefined,
       error: state.status === "error" ? state.error : undefined,
       metadata: state.status === "completed" || state.status === "running" ? state.metadata : undefined,
     },

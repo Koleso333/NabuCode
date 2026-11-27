@@ -1,11 +1,12 @@
 {
   "name": "everyend-tauri",
   "private": true,
-  "version": "0.1.1-nightly.261126",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:panel": "vite build --mode panel",
     "tauri": "tauri"
   },
   "dependencies": {
