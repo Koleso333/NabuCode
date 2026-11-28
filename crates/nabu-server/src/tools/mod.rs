@@ -32,6 +32,8 @@ mod read;
 mod search;
 mod shell;
 mod skill;
+mod wait;
+mod waits;
 mod web;
 mod write;
 
@@ -57,10 +59,12 @@ enum Run {
     Web(fn(Value) -> BoxFuture<'static, Result<String, String>>),
     /// Works in the chat's browser tabs.
     Browser(fn(browse::Call) -> BoxFuture<'static, Result<Vec<Block>, String>>),
+    /// `wait`: watches the session's background work and the chat's tabs.
+    Wait,
 }
 
 /// Definition, name, run, and whether the tool must run alone: file edits do, reads and shells share.
-const TOOLS: [(fn() -> ToolDef, &str, Run, bool); 18] = [
+const TOOLS: [(fn() -> ToolDef, &str, Run, bool); 19] = [
     (read::def, "read", Run::Content(read::run), false),
     (list::def, "list", Run::Files(list::run), false),
     (glob::def, "glob", Run::Files(glob::run), false),
@@ -80,6 +84,7 @@ const TOOLS: [(fn() -> ToolDef, &str, Run, bool); 18] = [
         false,
     ),
     (jobs::def, "task", Run::Programs(jobs::run), false),
+    (wait::plain_def, "wait", Run::Wait, false),
     (
         search::def,
         "search",
@@ -255,6 +260,10 @@ impl Toolbox {
             .is_none_or(|list| list.iter().any(|n| n == name || n == group_of(name)))
     }
 
+    fn has_browser(&self) -> bool {
+        self.allows("browser") && self.is_loaded("browser")
+    }
+
     fn is_loaded(&self, tool: &str) -> bool {
         self.loaded.lock().unwrap().iter().any(|n| n == group_of(tool))
     }
@@ -357,6 +366,11 @@ impl Toolbox {
         if let Run::Web(run) = run {
             return web::until_stopped(signals, run(args)).await.map(text);
         }
+        if let Run::Wait = run {
+            drop(self.order.read().await);
+            let call = wait::Call { args, jobs: self.jobs.clone(), signals: signals.clone(), chat: self.chat.clone(), browser: self.has_browser() };
+            return wait::run(call).await.map(text);
+        }
         if let Run::Browser(run) = run {
             let call = browse::Call { chat: self.chat.clone(), chrome: self.chrome.clone(), directory: self.directory.clone(), args };
             return web::until_stopped(signals, run(call)).await;
@@ -386,7 +400,7 @@ impl Toolbox {
             }
             Run::Content(run) => (run(&directory, &args), Vec::new()),
             Run::Programs(run) => (run(&directory, &args, &signals, &jobs).map(text), Vec::new()),
-            Run::Web(_) | Run::Browser(_) => unreachable!("web and browser tools run above"),
+            Run::Web(_) | Run::Browser(_) | Run::Wait => unreachable!("web, browser and wait tools run above"),
         });
         let (result, files) = task.await.map_err(|e| format!("the tool crashed: {e}"))?;
         if let (Some((sessions, session)), false) = (&self.shown_in, files.is_empty()) {
@@ -401,7 +415,7 @@ impl Tools for Toolbox {
         let mut defs: Vec<ToolDef> = TOOLS
             .iter()
             .filter(|(_, name, _, _)| offered(name) && self.allows(name) && !deferred(name))
-            .map(|(def, _, _, _)| def())
+            .map(|(def, name, _, _)| if *name == "wait" { wait::def(self.has_browser()) } else { def() })
             .collect();
         // Only the main agent talks to the user and starts subagents.
         if let Some(spawner) = &self.spawner {

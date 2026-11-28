@@ -412,7 +412,7 @@ export const ru = {
     stage: { waiting: "Ожидание", thinking: "Думаю", working: "Работаю" },
     tool: {
       read: "Чтение", list: "Папка", glob: "Поиск файлов", grep: "Поиск в файлах", fetch: "Страница", search: "Поиск в сети",
-      tools: "Подключаю тулы", shell: "Команда", task: "Фоновая задача", edit: "Правка", write: "Запись", ask: "Вопросы", agent: "Агент", skill: "Скилл",
+      tools: "Подключаю тулы", shell: "Команда", task: "Фоновая задача", wait: "Ожидание", edit: "Правка", write: "Запись", ask: "Вопросы", agent: "Агент", skill: "Скилл",
       browser_open: "Вкладка", browser_state: "Состояние страницы", browser_act: "Действия", browser_read: "Текст страницы",
       browser_js: "JavaScript", browser_logs: "Консоль", browser_network: "Сеть", browser_tabs: "Вкладки",
     } as Record<string, string>,
@@ -421,6 +421,12 @@ export const ru = {
       click: "клик", hover: "наведение", type: "ввод", fill: "заполнение", key: "клавиши", scroll: "прокрутка", drag: "перетаскивание",
       upload: "загрузка файла", dialog: "ответ диалогу", goto: "переход", back: "назад", forward: "вперёд", reload: "обновление", viewport: "размер",
     } as Record<string, any>,
+    wait: {
+      until: (time: string) => `до ${time}`,
+      seconds: (s: number) => `${s} сек`,
+      minutes: (m: number, s: number) => s ? `${m} мин ${s} сек` : `${m} мин`,
+      hours: (h: number, m: number) => m ? `${h} ч ${m} мин` : `${h} ч`,
+    },
     context: {
       active: "Смотрю", done: "Посмотрел",
       read: (n: number) => `файлы: ${n}`, search: (n: number) => `поиск: ${n}`, list: (n: number) => `папки: ${n}`,

@@ -12,6 +12,7 @@ mod files;
 #[cfg(test)]
 mod gemini_tests;
 mod grok;
+mod local_proxy;
 mod models;
 mod projects;
 mod prompt;
@@ -524,16 +525,7 @@ async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T, String> + 
 }
 
 fn proxy_from_env() -> Option<Proxy> {
-    let url = ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]
-        .iter()
-        .find_map(|k| std::env::var(k).ok())?;
-    match Proxy::parse(&url) {
-        Ok(proxy) => Some(proxy),
-        Err(e) => {
-            eprintln!("[server] ignoring proxy {url:?}: {e}");
-            None
-        }
-    }
+    local_proxy::resolve()
 }
 
 #[cfg(test)]

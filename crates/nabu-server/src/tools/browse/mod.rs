@@ -771,6 +771,85 @@ fn dialog_open() -> String {
     "the page opened a dialog and waits for an answer: answer it with browser_act's dialog action".into()
 }
 
+/// What `wait` watches for in a tab; all the given conditions must hold.
+#[derive(Clone, Default)]
+pub struct PageWatch {
+    pub tab: u32,
+    pub text: Option<String>,
+    pub gone: Option<String>,
+    pub selector: Option<String>,
+    pub url: Option<String>,
+}
+
+impl PageWatch {
+    pub fn is_empty(&self) -> bool {
+        self.text.is_none() && self.gone.is_none() && self.selector.is_none() && self.url.is_none()
+    }
+
+    /// `text "Saved" on the page in tab 3`, for the notice of a background wait.
+    pub fn describe(&self) -> String {
+        let mut what = Vec::new();
+        if let Some(text) = &self.text {
+            what.push(format!("text {text:?} is on the page"));
+        }
+        if let Some(gone) = &self.gone {
+            what.push(format!("text {gone:?} is gone from the page"));
+        }
+        if let Some(selector) = &self.selector {
+            what.push(format!("an element matches {selector:?}"));
+        }
+        if let Some(url) = &self.url {
+            what.push(format!("the URL contains {url:?}"));
+        }
+        format!("{} in tab {}", what.join(" and "), self.tab)
+    }
+}
+
+/// Whether the page meets the watch, and how it stands on each condition: `text "Saved" is not on the page in tab 3`.
+pub async fn page_check(chat: &str, watch: &PageWatch) -> Result<(bool, String), String> {
+    let (_, tab) = tab_of(chat, &json!({ "tab": watch.tab }))?;
+    let quoted = |value: &Option<String>| serde_json::to_string(value).unwrap_or_default();
+    let script = format!(
+        "(() => {{ const body = document.body ? document.body.innerText : ''; const text = {}, gone = {}, selector = {};
+let matched = null;
+if (selector !== null) {{ try {{ matched = !!document.querySelector(selector); }} catch (e) {{ matched = 'bad'; }} }}
+return {{ text: text === null ? null : body.includes(text), gone: gone === null ? null : !body.includes(gone), matched, url: location.href }}; }})()",
+        quoted(&watch.text),
+        quoted(&watch.gone),
+        quoted(&watch.selector)
+    );
+    // A page in the middle of loading has no context to run in: it counts as not there yet
+    let Some(Ok(found)) = tab.unless_dialog(async { Ok(evaluate(&tab, &script).await) }).await? else {
+        if tab.state.lock().unwrap().dialog.is_some() {
+            return Err(dialog_open());
+        }
+        return Ok((false, format!("tab {} is loading", watch.tab)));
+    };
+    if found["matched"] == "bad" {
+        return Err(format!("{:?} is not a valid CSS selector", watch.selector.as_deref().unwrap_or_default()));
+    }
+    let url = found["url"].as_str().unwrap_or_default();
+    let mut met = true;
+    let mut lines = Vec::new();
+    let mut add = |ok: bool, yes: String, no: String| {
+        met &= ok;
+        lines.push(if ok { yes } else { no });
+    };
+    if let Some(text) = &watch.text {
+        add(found["text"] == true, format!("text {text:?} is on the page"), format!("text {text:?} is not on the page"));
+    }
+    if let Some(gone) = &watch.gone {
+        add(found["gone"] == true, format!("text {gone:?} is gone from the page"), format!("text {gone:?} is still on the page"));
+    }
+    if let Some(selector) = &watch.selector {
+        add(found["matched"] == true, format!("an element matches {selector:?}"), format!("no element matches {selector:?}"));
+    }
+    if let Some(part) = &watch.url {
+        add(url.contains(part.as_str()), format!("the URL is {url}"), format!("the URL is {url}, without {part:?}"));
+    }
+    Ok((met, format!("{} in tab {}", lines.join("; "), watch.tab)))
+}
+
 async fn evaluate(tab: &Tab, expression: &str) -> Result<Value, String> {
     let result = tab.call("Runtime.evaluate", json!({ "expression": expression, "returnByValue": true })).await?;
     if let Some(details) = result.get("exceptionDetails") {

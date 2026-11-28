@@ -153,7 +153,7 @@ function TurnView(props: { chat: Chat; turn: Accessor<Turn | undefined>; last: b
     return [model, duration(turn()), interrupted() ? tr().chat.interrupted : ""].filter(Boolean).join(" · ");
   };
   const stage = () => {
-    const last = items().at(-1)?.part;
+    const last = turn().assistants.flatMap(message => message.parts).at(-1);
     if (!preferences.chat.responseStages) return tr().chat.stage.thinking;
     return tr().chat.stage[!last ? "waiting" : last.type === "reasoning" ? "thinking" : "working"];
   };

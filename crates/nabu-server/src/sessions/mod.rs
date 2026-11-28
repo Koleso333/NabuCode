@@ -75,7 +75,7 @@ impl Sessions {
         events: broadcast::Sender<Event>,
     ) -> Arc<Self> {
         let store = Store::new(data.join("sessions"));
-        let docs = store
+        let docs: HashMap<String, Doc> = store
             .load_all()
             .into_iter()
             .map(|mut doc| {
@@ -92,6 +92,7 @@ impl Sessions {
                 (doc.session.id.clone(), doc)
             })
             .collect();
+        let jobs = waiting(&store, &docs);
         let sessions = Arc::new(Self {
             store,
             chats: data.join("chats"),
@@ -99,6 +100,7 @@ impl Sessions {
             models,
             events,
             state: Mutex::new(State {
+                jobs,
                 docs,
                 skill_sources: crate::skills::default_sources(),
                 ..State::default()
@@ -445,6 +447,7 @@ impl Sessions {
         self.state.lock().unwrap().queue.remove(id);
         self.abort(id);
         self.state.lock().unwrap().jobs.remove(id);
+        let _ = std::fs::remove_file(self.store.waits(id));
         crate::tools::close_browser_tabs(id);
     }
 
@@ -523,7 +526,7 @@ impl Sessions {
                 self.enqueue(&mut state, prompt);
                 return Ok(());
             }
-            let jobs = state.jobs.entry(id.clone()).or_default().clone();
+            let jobs = self.jobs_of(&mut state, &id);
             let doc = state.docs.get_mut(&id).ok_or_else(|| missing(&id))?;
             // A message taken back from the queue keeps its old id, which may sort before the history by now
             let message_id = match doc.messages.last().map(|m| m.info.id()) {
@@ -558,6 +561,17 @@ impl Sessions {
         Ok(())
     }
 
+    /// The session's background work; a saved session keeps its waits in a file.
+    fn jobs_of(&self, state: &mut State, id: &str) -> Arc<Jobs> {
+        let temporary = state.docs.get(id).is_none_or(|d| d.session.temporary);
+        let file = self.store.waits(id);
+        state
+            .jobs
+            .entry(id.into())
+            .or_insert_with(|| Arc::new(if temporary { Jobs::default() } else { Jobs::kept_in(file) }))
+            .clone()
+    }
+
     /// Starts a turn by itself when a background task ended while the session was idle.
     fn wake(self: &Arc<Self>, id: &str) {
         let interrupt = Arc::new(Interrupt::default());
@@ -566,13 +580,23 @@ impl Sessions {
             let Some(jobs) = state.jobs.get(id).cloned() else {
                 return;
             };
-            if state.running.contains_key(id) || !jobs.pending() {
+            if state.running.contains_key(id) {
                 return;
             }
-            // A subagent hears of its tasks when its agent continues it.
-            let Some(doc) = state.docs.get(id).filter(|d| d.session.parent_id.is_none()) else {
+            let Some(doc) = state.docs.get(id) else {
                 return;
             };
+            // A subagent hears of its tasks when its agent continues it; a wait of its own wakes it
+            if let Some(parent) = doc.session.parent_id.clone() {
+                if jobs.wait_fired() {
+                    drop(state);
+                    self.wake_sub(id, &parent);
+                }
+                return;
+            }
+            if !jobs.pending() {
+                return;
+            }
             let Some((model, agent)) = doc.messages.iter().rev().find_map(|m| match &m.info {
                 Message::User(u) => Some((u.model.clone(), u.agent.clone())),
                 Message::Assistant(_) => None,
@@ -591,7 +615,7 @@ impl Sessions {
                 model,
             };
             let note = format!(
-                "(Not a message from the person: this turn started because a background task ended.)\n{}",
+                "(Not a message from the person: this turn started because of the background notice below.)\n{}",
                 jobs.notices().join("\n")
             );
             let parts = vec![note_part(note, id, &user.id)];
@@ -599,6 +623,26 @@ impl Sessions {
             (directory, user, parts, jobs)
         };
         self.begin(directory, user, parts, jobs, interrupt);
+    }
+
+    /// A subagent whose wait fired goes on by itself; its new report comes to its agent as a background subagent's does.
+    fn wake_sub(self: &Arc<Self>, child: &str, parent: &str) {
+        let Some(jobs) = self.state.lock().unwrap().jobs.get(parent).cloned() else {
+            return;
+        };
+        let Some(sub) = jobs.sub_of(child) else {
+            return;
+        };
+        let (Ok((_, description)), Some(model)) = (jobs.sub_session(&sub), self.last_model(child)) else {
+            return;
+        };
+        let cancel = CancelToken::new();
+        jobs.sub_start(Some(&sub), child, &description, true, &cancel);
+        let (this, child) = (self.clone(), child.to_owned());
+        tokio::spawn(async move {
+            let report = this.subagent_turn(&child, model, String::new(), cancel).await;
+            jobs.sub_end(&sub, &report);
+        });
     }
 
     /// Saves the user message and marks the session running; returns its directory.
@@ -685,7 +729,7 @@ impl Sessions {
             if state.running.contains_key(id) {
                 return "(the subagent was already running)".into();
             }
-            let jobs = state.jobs.entry(id.into()).or_default().clone();
+            let jobs = self.jobs_of(&mut state, id);
             let last = state
                 .docs
                 .get(id)
@@ -698,16 +742,24 @@ impl Sessions {
                 agent: "subagent".into(),
                 model,
             };
-            let mut parts = vec![Part::Text(TextPart {
-                id: id::ascending("prt"),
-                session_id: id.into(),
-                message_id: user.id.clone(),
-                text,
-                time: None,
-                sig: None,
-                synthetic: false,
-            })];
-            let notes = jobs.notices();
+            // No task: a wait of its own woke it
+            let woken = text.is_empty();
+            let mut parts = Vec::new();
+            if !woken {
+                parts.push(Part::Text(TextPart {
+                    id: id::ascending("prt"),
+                    session_id: id.into(),
+                    message_id: user.id.clone(),
+                    text,
+                    time: None,
+                    sig: None,
+                    synthetic: false,
+                }));
+            }
+            let mut notes = jobs.notices();
+            if woken {
+                notes.insert(0, "(Not a message from your agent: this turn started because of the background notice below.)".into());
+            }
             if !notes.is_empty() {
                 parts.push(note_part(notes.join("\n"), id, &user.id));
             }
@@ -898,6 +950,16 @@ fn session_of(message: &Message) -> &str {
         Message::User(m) => &m.session_id,
         Message::Assistant(m) => &m.session_id,
     }
+}
+
+/// Sessions with background waits saved by the last run of the server: their waits go on.
+fn waiting(store: &Store, docs: &HashMap<String, Doc>) -> HashMap<String, Arc<Jobs>> {
+    docs.iter()
+        .filter(|(_, doc)| !doc.session.temporary)
+        .map(|(id, _)| (id, store.waits(id)))
+        .filter(|(_, file)| file.exists())
+        .map(|(id, file)| (id.clone(), Arc::new(Jobs::kept_in(file))))
+        .collect()
 }
 
 fn missing(id: &str) -> String {

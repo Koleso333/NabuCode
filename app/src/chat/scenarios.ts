@@ -256,6 +256,7 @@ const web: Script = async reply => {
   await reply.say("Документация подтверждает: `startDragging()` работает и без атрибута. Проверю, как ведёт себя dev-сервер с этим изменением.");
   await reply.run("powershell", { command: "npm run dev", description: "Запуск dev-сервера", background: true }, 600,
     "Started task1 in the background.\nLog: C:\\Users\\me\\AppData\\Local\\NabuCode\\tasks\\task1.log");
+  await reply.run("wait", { seconds: 4 }, 4000, "4 s passed; now 15:18:11.");
   await reply.run("task", { id: "task1", wait: 20, until: "ready in" }, 2600,
     "task1: running\n\n> everyend-tauri@0.1.0 dev\n> vite\n\n  VITE v7.3.8  ready in 412 ms\n\n  ➜  Local:   http://localhost:1431/");
   await reply.run("task", { id: "task1", stop: true }, 500, "task1: stopped (exit code 1)");

@@ -35,13 +35,15 @@ export function Shimmer(props: { text: string; active?: boolean }) {
   return <span class="shimmer" classList={{ active: props.active }}>{props.text}</span>;
 }
 
-export type ToolLabel = { title: string; subtitle?: string; args?: string[]; mono?: boolean };
+/** `live`: subtitle and args stay visible while the tool runs. */
+export type ToolLabel = { title: string; subtitle?: string; args?: string[]; mono?: boolean; live?: boolean };
 
 export function ToolTitle(props: { label: ToolLabel; running?: boolean }) {
+  const shown = () => !props.running || props.label.live;
   return <span class="tool-label">
     <span class="tool-title"><Shimmer text={props.label.title} active={props.running} /></span>
-    <Show when={!props.running && props.label.subtitle}><span class="tool-subtitle" classList={{ mono: props.label.mono }}>{props.label.subtitle}</span></Show>
-    <Show when={!props.running}><For each={props.label.args}>{arg => <span class="tool-arg">{arg}</span>}</For></Show>
+    <Show when={shown() && props.label.subtitle}><span class="tool-subtitle" classList={{ mono: props.label.mono }}>{props.label.subtitle}</span></Show>
+    <Show when={shown()}><For each={props.label.args}>{arg => <span class="tool-arg">{arg}</span>}</For></Show>
   </span>;
 }
 
@@ -79,6 +81,7 @@ export function toolLabel(part: ToolPart): ToolLabel {
     case "tools": return { title, subtitle: oneLine(input.load, ", ") };
     case "bash": case "powershell": return { title: tr().chat.tool.shell, subtitle: shellSubtitle(input), mono: !input.description, args: input.background ? [tr().chat.background] : [] };
     case "task": return { title, subtitle: input.id };
+    case "wait": return waitLabel(title, input);
     case "edit": case "write": {
       const files = changedFiles(part);
       return { title, subtitle: files.length > 1 ? tr().chat.files(files.length) : fileName(files[0]?.relativePath ?? input.path ?? "") };
@@ -96,6 +99,28 @@ export function toolLabel(part: ToolPart): ToolLabel {
 }
 
 const browser = () => tr().chat.browser;
+
+// "Ожидание 5 мин", "Ожидание до 15:30", "Ожидание task1, sub1", "Ожидание вкладка 3 text=Saved"
+function waitLabel(title: string, input: Record<string, any>): ToolLabel {
+  const text = tr().chat.wait;
+  const flags = input.background ? [tr().chat.background] : [];
+  const time = typeof input.at === "string" ? text.until(input.at) : typeof input.seconds === "number" ? duration(input.seconds) : "";
+  if (typeof input.tab === "number") {
+    const conditions = ["text", "gone", "selector", "url"].filter(key => typeof input[key] === "string").map(key => `${key}=${input[key]}`);
+    return { title, subtitle: browser().tab(input.tab), args: [...conditions, ...(time ? [time] : []), ...flags], live: true };
+  }
+  const tasks = oneLine(input.tasks, ", ");
+  if (tasks) return { title, subtitle: tasks, args: [...(time ? [time] : []), ...flags], live: true };
+  return { title, subtitle: time, args: flags, live: true };
+}
+
+function duration(seconds: number) {
+  const text = tr().chat.wait;
+  const s = Math.round(seconds);
+  if (s < 60) return text.seconds(s);
+  if (s < 3600) return text.minutes(Math.floor(s / 60), s % 60);
+  return text.hours(Math.floor(s / 3600), Math.floor(s % 3600 / 60));
+}
 
 // "клик [3] · ввод «привет» · клавиши Enter"
 function actsSubtitle(actions: unknown) {
@@ -225,7 +250,7 @@ export function toolBody(part: ToolPart): (() => JSX.Element) | undefined {
     case "read": return output ? () => <ReadPanel path={part.state.input.path ?? ""} text={output} /> : undefined;
     case "skill": return output ? () => <SkillPanel output={output} /> : undefined;
     case "search": return output ? () => <SearchResults text={output} /> : undefined;
-    case "fetch": case "list": case "glob": case "grep": case "task": return output ? () => <Output text={output} /> : undefined;
+    case "fetch": case "list": case "glob": case "grep": case "task": case "wait": return output ? () => <Output text={output} /> : undefined;
     case "browser_open": case "browser_state": case "browser_act": case "browser_read": case "browser_js": case "browser_logs": case "browser_tabs": {
       const shots = part.state.images ?? [];
       return output || shots.length ? () => <>

@@ -408,7 +408,7 @@ export const en: Dictionary = {
     stage: { waiting: "Waiting", thinking: "Thinking", working: "Working" },
     tool: {
       read: "Read", list: "List", glob: "Find files", grep: "Search files", fetch: "Page", search: "Web search",
-      tools: "Loading tools", shell: "Shell", task: "Background task", edit: "Edit", write: "Write", ask: "Questions", agent: "Agent", skill: "Skill",
+      tools: "Loading tools", shell: "Shell", task: "Background task", wait: "Wait", edit: "Edit", write: "Write", ask: "Questions", agent: "Agent", skill: "Skill",
       browser_open: "Tab", browser_state: "Page state", browser_act: "Actions", browser_read: "Page text",
       browser_js: "JavaScript", browser_logs: "Console", browser_network: "Network", browser_tabs: "Tabs",
     } as Record<string, string>,
@@ -417,6 +417,12 @@ export const en: Dictionary = {
       click: "click", hover: "hover", type: "type", fill: "fill", key: "keys", scroll: "scroll", drag: "drag",
       upload: "upload", dialog: "dialog answer", goto: "go to", back: "back", forward: "forward", reload: "reload", viewport: "size",
     } as Record<string, any>,
+    wait: {
+      until: (time: string) => `until ${time}`,
+      seconds: (s: number) => `${s} s`,
+      minutes: (m: number, s: number) => s ? `${m} min ${s} s` : `${m} min`,
+      hours: (h: number, m: number) => m ? `${h} h ${m} min` : `${h} h`,
+    },
     context: {
       active: "Exploring", done: "Explored",
       read: (n: number) => `${n} ${n === 1 ? "read" : "reads"}`, search: (n: number) => `${n} ${n === 1 ? "search" : "searches"}`, list: (n: number) => `${n} ${n === 1 ? "list" : "lists"}`,

@@ -5,12 +5,14 @@ use std::process::{Child, Command};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use chrono::Local;
 use ncore::CancelToken;
 use ncore::core::ir::ToolDef;
 use regex::Regex;
 use serde_json::{Value, json};
 
 use super::shell::{self, Script};
+use super::waits::{Watch, Waits, clock, with_note};
 use super::{Signals, num_arg, opt_str};
 
 /// How long a new task is watched before the call returns, so a command that fails at once says so.
@@ -20,12 +22,13 @@ const COMMAND_SHOWN: usize = 80;
 /// Lines of output a notice about an ended task carries.
 const NOTICE_LINES: usize = 20;
 
-/// Background work of one session: commands `task1`, `task2`, … and subagents `sub1`, `sub2`, …
+/// Background work of one session: commands `task1`, `task2`, …, subagents `sub1`, `sub2`, … and waits `wait1`, `wait2`, …
 /// Running ones are killed when the session is closed or deleted.
 #[derive(Default)]
 pub struct Jobs {
     list: Mutex<Vec<Job>>,
     subs: Mutex<Vec<Sub>>,
+    pub(super) waits: Mutex<Waits>,
 }
 
 /// A subagent; it works in its own child session.
@@ -193,6 +196,108 @@ impl Job {
 }
 
 impl Jobs {
+    /// Jobs whose waits are kept in `file` and read back from it.
+    pub fn kept_in(file: PathBuf) -> Self {
+        let jobs = Self::default();
+        *jobs.waits.lock().unwrap() = Waits::kept_in(file);
+        jobs
+    }
+
+    /// Ids of all background work, for messages about an unknown one.
+    pub(super) fn ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.list.lock().unwrap().iter().map(|j| j.id.clone()).collect();
+        ids.extend(self.subs.lock().unwrap().iter().map(|s| s.id.clone()));
+        ids.extend(self.waits.lock().unwrap().list.iter().map(|w| w.id.clone()));
+        ids
+    }
+
+    pub(super) fn unknown_work(&self, id: &str) -> String {
+        format!("no task {id}; this session has {}", or_none(&self.ids()))
+    }
+
+    /// Whether the task, subagent or wait `id` ended; `None` when there is none.
+    pub(super) fn ended(&self, id: &str) -> Option<bool> {
+        if let Some(job) = self.list.lock().unwrap().iter_mut().find(|j| j.id == id) {
+            job.poll();
+            return Some(job.end.is_some());
+        }
+        if let Some(sub) = self.subs.lock().unwrap().iter().find(|s| s.id == id) {
+            return Some(sub.end.is_some());
+        }
+        let mut waits = self.waits.lock().unwrap();
+        waits.fire_due();
+        waits.list.iter().find(|w| w.id == id).map(|w| w.fired.is_some())
+    }
+
+    pub(super) fn state_of(&self, id: &str) -> String {
+        if let Some(job) = self.list.lock().unwrap().iter().find(|j| j.id == id) {
+            return job.state();
+        }
+        if let Some(sub) = self.subs.lock().unwrap().iter().find(|s| s.id == id) {
+            return sub.state();
+        }
+        let state = self.waits.lock().unwrap().list.iter().find(|w| w.id == id).map(|w| w.state());
+        state.unwrap_or_else(|| self.unknown_work(id))
+    }
+
+    /// Its report as `task` gives it; the model then knows it ended.
+    pub(super) fn report_of(&self, id: &str) -> String {
+        if let Some(job) = self.list.lock().unwrap().iter_mut().find(|j| j.id == id) {
+            return job.report(None);
+        }
+        if let Some(sub) = self.subs.lock().unwrap().iter_mut().find(|s| s.id == id) {
+            return format!("{}\nsession: {}", sub.report(), sub.session);
+        }
+        let notice = self.waits.lock().unwrap().take_notice(id);
+        notice.unwrap_or_else(|| self.state_of(id))
+    }
+
+    /// Fires the waits that came due or whose tasks ended.
+    fn poll_waits(&self) {
+        let watching: Vec<_> = {
+            let mut waits = self.waits.lock().unwrap();
+            waits.fire_due();
+            waits
+                .list
+                .iter()
+                .filter(|w| w.fired.is_none())
+                .filter_map(|w| match &w.watch {
+                    Watch::Tasks { ids, all } => Some((w.id.clone(), ids.clone(), *all, w.due, w.note.clone())),
+                    _ => None,
+                })
+                .collect()
+        };
+        for (id, ids, all, due, note) in watching {
+            let (ended, running): (Vec<&String>, Vec<&String>) = ids.iter().partition(|t| self.ended(t) != Some(false));
+            let met = if all { running.is_empty() } else { !ended.is_empty() };
+            let now = Local::now();
+            if !met && now < due {
+                continue;
+            }
+            let ended: Vec<String> = ended.iter().map(|t| self.state_of(t)).collect();
+            let mut line = match met {
+                true => format!("{id} fired at {}: {}", clock(now, now), ended.join("; ")),
+                false => format!("{id} ran out at {}", clock(now, now)),
+            };
+            if !running.is_empty() {
+                let running: Vec<&str> = running.iter().map(|t| t.as_str()).collect();
+                line.push_str(&format!("; still running: {}", running.join(", ")));
+            }
+            self.waits.lock().unwrap().fire(&id, with_note(line, &note));
+        }
+    }
+
+    /// The subagent working in `session`.
+    pub fn sub_of(&self, session: &str) -> Option<String> {
+        self.subs.lock().unwrap().iter().find(|s| s.session == session).map(|s| s.id.clone())
+    }
+
+    /// Whether a wait fired and the model was not told yet.
+    pub fn wait_fired(&self) -> bool {
+        self.poll_waits();
+        self.waits.lock().unwrap().pending()
+    }
+
     /// Starts `process` with its output going to a log file; `script` lives as long as the task.
     pub fn start(
         &self,
@@ -319,6 +424,9 @@ impl Jobs {
 
     /// Whether a task or background subagent ended and the model was not told yet.
     pub fn pending(&self) -> bool {
+        if self.wait_fired() {
+            return true;
+        }
         if self
             .subs
             .lock()
@@ -337,6 +445,7 @@ impl Jobs {
 
     /// A note for each task that ended since the model last heard of it, with the end of its unseen output.
     pub fn notices(&self) -> Vec<String> {
+        self.poll_waits();
         let mut list = self.list.lock().unwrap();
         let mut notes = Vec::new();
         for job in list.iter_mut() {
@@ -368,6 +477,7 @@ impl Jobs {
         {
             notes.push(format!("[background] {}", sub.report()));
         }
+        notes.extend(self.waits.lock().unwrap().notices());
         notes
     }
 
@@ -401,9 +511,37 @@ impl Jobs {
         }
     }
 
+    /// State of the wait `id`; waits for it to fire or cancels it.
+    fn look_wait(&self, id: &str, args: &Value, signals: &Signals) -> Result<String, String> {
+        if args.get("stop").and_then(Value::as_bool).unwrap_or(false) {
+            let stopped = self.waits.lock().unwrap().stop(id);
+            return stopped.ok_or_else(|| self.unknown_work(id));
+        }
+        let wait = Duration::from_secs(num_arg(args, "wait").map_or(0, |s| (s as u64).min(WAIT_MAX)));
+        let deadline = Instant::now() + wait;
+        loop {
+            self.poll_waits();
+            if self.ended(id).ok_or_else(|| self.unknown_work(id))? {
+                return Ok(self.report_of(id));
+            }
+            if Instant::now() >= deadline || stopped(signals) {
+                let note = match (!wait.is_zero(), signals.wrap_up.is_cancelled()) {
+                    (true, true) => "stopped waiting: the person sent you a message; it keeps waiting.\n",
+                    (true, false) => "still waiting after the wait.\n",
+                    (false, _) => "",
+                };
+                return Ok(format!("{note}{}", self.state_of(id)));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
     fn look(&self, id: &str, args: &Value, signals: &Signals) -> Result<String, String> {
         if id.starts_with("sub") {
             return self.look_sub(id, args, signals);
+        }
+        if id.starts_with("wait") {
+            return self.look_wait(id, args, signals);
         }
         let until = match opt_str(args, "until") {
             Some(pattern) => Some(
@@ -464,8 +602,11 @@ impl Jobs {
             })
             .collect();
         lines.extend(self.subs.lock().unwrap().iter().map(Sub::state));
+        drop(list);
+        self.poll_waits();
+        lines.extend(self.waits.lock().unwrap().list.iter().filter(|w| !w.told).map(|w| w.state()));
         if lines.is_empty() {
-            return "no background tasks or subagents in this session".into();
+            return "no background tasks, subagents or waits in this session".into();
         }
         lines.join("\n")
     }
@@ -528,12 +669,13 @@ pub fn def() -> ToolDef {
         "task",
         "Checks, waits for or stops a background command started by bash or powershell with `background: true`, \
 or a subagent started by `agent` (ids like \"sub1\"; for those, `wait` returns at its end with its full report, \
-`stop` stops it, and `until`/`tail` do not apply). Without `id` lists the session's tasks and subagents. With `id` shows the task's state (running, or its exit code) and its new output, \
+`stop` stops it, and `until`/`tail` do not apply), or a background wait started by `wait` (ids like \"wait1\"; `wait` waits for it to fire, `stop` cancels it). Without `id` lists the session's tasks, subagents and waits. With `id` shows the task's state (running, or its exit code) and its new output, \
 cleaned of colors: each `task` call shows only lines no earlier `task` call showed (notices do not count, so output a notice \
 showed comes again with the next `task` call). \
 The whole log stays in the file named in the result: read or grep it for earlier lines. \
 `wait: N` blocks up to N seconds (at most 600) until the task ends; with `until`, also until a new output line matches \
-that regular expression — for a server, wait for its \"listening\" line instead of sleeping. `stop: true` kills the task \
+that regular expression — for a server, wait for its \"listening\" line instead of sleeping. The `wait` tool waits for \
+the first or all of several at once (`tasks`). `stop: true` kills the task \
 and its child processes; a task that already ended keeps its exit code. With `tail`, the earlier new lines are skipped \
 and count as seen. When a task ends, a notice with the last lines of its output comes with your next tool result or message. \
 When you have nothing else to do until a task ends, call `task` with a long `wait` instead of short checks in a row. Programs write to a log, not a terminal: Python is unbuffered here, but other programs may hold output \
@@ -542,7 +684,7 @@ between your steps and messages, are not killed when the person stops you, and e
         json!({
             "type": "object",
             "properties": {
-                "id": { "type": "string", "description": "Task id, like \"task1\". Omit to list all tasks." },
+                "id": { "type": "string", "description": "Task id, like \"task1\", \"sub1\" or \"wait1\". Omit to list all of them." },
                 "wait": { "type": "integer", "description": "Seconds to wait for the task to end (or for `until`). Default 0: look right away." },
                 "until": { "type": "string", "description": "Regular expression; with `wait`, return as soon as a new output line matches it." },
                 "stop": { "type": "boolean", "description": "Kill the task and its child processes." },

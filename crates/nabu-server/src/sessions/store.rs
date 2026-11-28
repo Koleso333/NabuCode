@@ -96,6 +96,11 @@ impl Store {
         Ok(())
     }
 
+    /// Background waits of the session, kept apart from its history: they change while it runs.
+    pub fn waits(&self, id: &str) -> PathBuf {
+        self.dir.join(format!("{}.waits", safe(id)))
+    }
+
     pub fn remove(&self, id: &str) {
         // A temporary session has no file, but may have uploaded attachments
         for removed in [std::fs::remove_file(self.path(id)), std::fs::remove_dir_all(self.attachments(id))] {
